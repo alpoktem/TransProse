@@ -16,7 +16,6 @@ from models import *
 import yaml
 
 def text_test_results_generator(data_path, encoder, decoder, input_lang, output_lang, n_prosody_params, max_seq_length, log_file=None, stop_at = -1, USE_CUDA=False):
-	assert not input_lang == output_lang
 	count = 0
 	if not log_file == None:
 		out_log_file = open(log_file, 'w')
@@ -91,7 +90,8 @@ def audio_test_results_generator(data_path, encoder, decoder, input_lang, output
 			#input_transcript = read_text_file(es_txt)
 			#output_transcript = read_text_file(en_txt)
 
-		in_sentence_tokens, in_prosody_tokens = read_data_from_proscript(input_proscript, input_lang, n_prosody_params, input_prosody_params)	
+		in_sentence_tokens, in_prosody_tokens = read_data_from_proscript(input_proscript, input_lang, n_prosody_params, input_prosody_params)
+		##input_prosody_tokens = finalize_prosody_sequence(input_prosody_tokens)
 		out_sentence_tokens = read_tokens_from_proscript(output_proscript) 	
 
 		if output_lang.omit_punctuation:
@@ -125,7 +125,7 @@ def evaluate(input_seq_tokens, input_prosody_seq, input_lang, output_lang, encod
 	if input_prosody_seq == None:
 		input_prosody_seqs = [prosody_from_tokens(input_seq_tokens, n_prosody_params)]
 	else:
-		input_prosody_seqs = [input_prosody_seq]
+		input_prosody_seqs = [finalize_prosody_sequence(input_prosody_seq)]
 
 	#make sure sequences are below max_length. 
 	input_word_seqs = limit_seqs_to_max(input_word_seqs, max_length)
@@ -146,7 +146,7 @@ def evaluate(input_seq_tokens, input_prosody_seq, input_lang, output_lang, encod
 	encoder_outputs, encoder_hidden = encoder(input_word_batches, input_prosody_batches, input_lengths, None)
 
 	# Create starting vectors for decoder
-	decoder_input = Variable(torch.LongTensor([output_lang.SPECIAL_TOKEN2INDEX[SWT_TOKEN]])) # SOS
+	decoder_input = Variable(torch.LongTensor([output_lang.token2index(SWT_TOKEN)])) # SOS
 	decoder_hidden = encoder_hidden[:decoder.n_layers] # Use last (forward) hidden state from encoder
 	
 	if USE_CUDA:
@@ -167,7 +167,7 @@ def evaluate(input_seq_tokens, input_prosody_seq, input_lang, output_lang, encod
 		topv, topi = decoder_output.data.topk(1)
 		#ni = topi[0][0]  #old code
 		ni = topi.item()
-		if ni == output_lang.SPECIAL_TOKEN2INDEX[EOS_TOKEN]:
+		if ni == output_lang.token2index(EOS_TOKEN):
 			decoded_words.append(EOS_TOKEN)
 			break
 		else:
@@ -209,22 +209,16 @@ def main(options):
 		else:
 			TEST_DATA_PATH = config["AUDIO_TEST_DATA_FILE"]
 
-	#Load w2v models and language parameters
-	w2v_model_es = gensim.models.Word2Vec.load(config["W2V_ES_PATH"])
-	w2v_model_en = gensim.models.Word2Vec.load(config["W2V_EN_PATH"])
-
-	BASE_VOCABULARY_SIZE_EN = config["BASE_VOCABULARY_SIZE_EN"]
-	BASE_VOCABULARY_SIZE_ES = config["BASE_VOCABULARY_SIZE_ES"]
-
+	#Setup languages
 	INPUT_LANG_CODE = config['INPUT_LANG']
 	OUTPUT_LANG_CODE = config['OUTPUT_LANG']
 
 	if INPUT_LANG_CODE == 'en' and OUTPUT_LANG_CODE == 'es':
-		lang_en = input_lang = Lang(INPUT_LANG_CODE, config["W2V_EN_PATH"], BASE_VOCABULARY_SIZE_EN, omit_punctuation=config["INPUT_LANG_OMIT_PUNC"])
-		lang_es = output_lang = Lang(OUTPUT_LANG_CODE, config["W2V_ES_PATH"], BASE_VOCABULARY_SIZE_ES, omit_punctuation=config["OUTPUT_LANG_OMIT_PUNC"])
+		lang_en = input_lang = Lang(INPUT_LANG_CODE, config["W2V_EN_PATH"], config["DICT_EN_PATH"], omit_punctuation=config["INPUT_LANG_OMIT_PUNC"])
+		lang_es = output_lang = Lang(OUTPUT_LANG_CODE, config["W2V_ES_PATH"], config["DICT_ES_PATH"], omit_punctuation=config["OUTPUT_LANG_OMIT_PUNC"])
 	elif INPUT_LANG_CODE == 'es' and OUTPUT_LANG_CODE == 'en':
-		lang_es = input_lang = Lang(INPUT_LANG_CODE, config["W2V_ES_PATH"], BASE_VOCABULARY_SIZE_ES, omit_punctuation=config["INPUT_LANG_OMIT_PUNC"])
-		lang_en = output_lang = Lang(OUTPUT_LANG_CODE, config["W2V_EN_PATH"], BASE_VOCABULARY_SIZE_EN, omit_punctuation=config["OUTPUT_LANG_OMIT_PUNC"])
+		lang_es = input_lang = Lang(INPUT_LANG_CODE, config["W2V_ES_PATH"], config["DICT_ES_PATH"], omit_punctuation=config["INPUT_LANG_OMIT_PUNC"])
+		lang_en = output_lang = Lang(OUTPUT_LANG_CODE, config["W2V_EN_PATH"], config["DICT_EN_PATH"], omit_punctuation=config["OUTPUT_LANG_OMIT_PUNC"])
 
 	# Configure models
 	MAX_SEQ_LENGTH = int(config['MAX_SEQ_LENGTH'])
@@ -237,7 +231,7 @@ def main(options):
 
 	# Initialize models
 	if encoder_type == 'sum':
-		encoder = EncoderRNN(input_lang.vocabulary_size, N_PROSODY_PARAMS, hidden_size, input_lang.get_weights_matrix(), n_layers)
+		encoder = EncoderRNN_sum(input_lang.vocabulary_size, N_PROSODY_PARAMS, hidden_size, input_lang.get_weights_matrix(), n_layers)
 	elif encoder_type == 'parallel':
 		encoder = EncoderRNN_parallel(input_lang.vocabulary_size, N_PROSODY_PARAMS, hidden_size, input_lang.get_weights_matrix(), n_layers)
 	else:

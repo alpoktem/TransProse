@@ -21,7 +21,6 @@ import csv
 #generates batches from given parallel data file... 
 #parallel data file has tab separated english and spanish sentence pairs (tokenized) at each line
 def batch_generator(data_path, batch_size, input_lang, output_lang, start_reading_from = 0, n_prosody_params = 3, USE_CUDA=False):
-	assert not input_lang == output_lang
 	input_word_seqs = []
 	input_prosody_seqs = []
 	target_seqs = []
@@ -86,7 +85,7 @@ def run_forward(input_word_batches, input_prosody_batches, input_lengths, target
 	encoder_outputs, encoder_hidden = encoder(input_word_batches, input_prosody_batches, input_lengths, None)
 	
 	# Prepare input and output variables
-	decoder_input = Variable(torch.LongTensor([output_lang.SPECIAL_TOKEN2INDEX[SWT_TOKEN]] * batch_size))
+	decoder_input = Variable(torch.LongTensor([output_lang.token2index(SWT_TOKEN)] * batch_size))
 	decoder_hidden = encoder_hidden[:decoder.n_layers] # Use last (forward) hidden state from encoder
 
 	max_target_length = max(target_lengths)
@@ -139,7 +138,7 @@ def train(input_word_batches, input_prosody_batches, input_lengths, target_batch
 	encoder_optimizer.step()
 	decoder_optimizer.step()
 	
-	return loss.data[0], ec, dc
+	return loss.item(), ec, dc
 
 def validate(input_word_batches, input_prosody_batches, input_lengths, target_batches, target_lengths, input_lang, output_lang, batch_size, encoder, decoder, USE_CUDA):
 	# Disable training, set to evaluation
@@ -166,21 +165,15 @@ def main(options):
 	TRAIN_DATA_PATH = config["TEXT_TRAIN_DATA_PATH"]
 	VALIDATION_DATA_PATH = config["TEXT_VALIDATION_DATA_PATH"]
 
-	w2v_model_es = gensim.models.Word2Vec.load(config["W2V_ES_PATH"])
-	w2v_model_en = gensim.models.Word2Vec.load(config["W2V_EN_PATH"])
-
-	BASE_VOCABULARY_SIZE_EN = config["BASE_VOCABULARY_SIZE_EN"]
-	BASE_VOCABULARY_SIZE_ES = config["BASE_VOCABULARY_SIZE_ES"]
-
 	INPUT_LANG_CODE = config['INPUT_LANG']
 	OUTPUT_LANG_CODE = config['OUTPUT_LANG']
 
 	if INPUT_LANG_CODE == 'en' and OUTPUT_LANG_CODE == 'es':
-		lang_en = input_lang = Lang(INPUT_LANG_CODE, config["W2V_EN_PATH"], BASE_VOCABULARY_SIZE_EN, omit_punctuation=config["INPUT_LANG_OMIT_PUNC"])
-		lang_es = output_lang = Lang(OUTPUT_LANG_CODE, config["W2V_ES_PATH"], BASE_VOCABULARY_SIZE_ES, omit_punctuation=config["OUTPUT_LANG_OMIT_PUNC"])
+		lang_en = input_lang = Lang(INPUT_LANG_CODE, config["W2V_EN_PATH"], config["DICT_EN_PATH"], omit_punctuation=config["INPUT_LANG_OMIT_PUNC"])
+		lang_es = output_lang = Lang(OUTPUT_LANG_CODE, config["W2V_ES_PATH"], config["DICT_ES_PATH"], omit_punctuation=config["OUTPUT_LANG_OMIT_PUNC"])
 	elif INPUT_LANG_CODE == 'es' and OUTPUT_LANG_CODE == 'en':
-		lang_es = input_lang = Lang(INPUT_LANG_CODE, config["W2V_ES_PATH"], BASE_VOCABULARY_SIZE_ES, omit_punctuation=config["INPUT_LANG_OMIT_PUNC"])
-		lang_en = output_lang = Lang(OUTPUT_LANG_CODE, config["W2V_EN_PATH"], BASE_VOCABULARY_SIZE_EN, omit_punctuation=config["OUTPUT_LANG_OMIT_PUNC"])
+		lang_es = input_lang = Lang(INPUT_LANG_CODE, config["W2V_ES_PATH"], config["DICT_ES_PATH"], omit_punctuation=config["INPUT_LANG_OMIT_PUNC"])
+		lang_en = output_lang = Lang(OUTPUT_LANG_CODE, config["W2V_EN_PATH"], config["DICT_EN_PATH"], omit_punctuation=config["OUTPUT_LANG_OMIT_PUNC"])
 
 	MAX_SEQ_LENGTH = int(config['MAX_SEQ_LENGTH'])
 	TRAINING_BATCH_SIZE = int(config['TEXT_TRAINING_BATCH_SIZE'])
@@ -206,7 +199,7 @@ def main(options):
 
 	# Initialize models
 	if encoder_type == 'sum':
-		encoder = EncoderRNN(input_lang.vocabulary_size, N_PROSODY_PARAMS, hidden_size, input_lang.get_weights_matrix(), n_layers, dropout=dropout)
+		encoder = EncoderRNN_sum(input_lang.vocabulary_size, N_PROSODY_PARAMS, hidden_size, input_lang.get_weights_matrix(), n_layers, dropout=dropout)
 	elif encoder_type == 'parallel':
 		encoder = EncoderRNN_parallel(input_lang.vocabulary_size, N_PROSODY_PARAMS, hidden_size, input_lang.get_weights_matrix(), n_layers, dropout=dropout)
 	else:

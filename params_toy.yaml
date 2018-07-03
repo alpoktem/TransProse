@@ -1,0 +1,66 @@
+#TEXT CORPUS 
+TEXT_TRAIN_DATA_PATH: /Users/alp/Documents/Corpora/OpenSubtitles2018/en-es_tokenized_50_train.txt
+TEXT_VALIDATION_DATA_PATH: /Users/alp/Documents/Corpora/OpenSubtitles2018/en-es_tokenized_50_validation.txt
+TEXT_TEST_DATA_PATH: /Users/alp/Documents/Corpora/OpenSubtitles2018/en-es_tokenized_50_test.txt
+
+TEXT_TRAINING_DATA_SIZE: 50
+
+#VOCABULARY 
+W2V_ES_PATH: /Users/alp/Documents/Corpora/OpenSubtitles2018/w2v/reapos_min5_heroes/w2v_es_heroes.model
+W2V_EN_PATH: /Users/alp/Documents/Corpora/OpenSubtitles2018/w2v/reapos_min5_heroes/w2v_en_heroes.model
+DICT_ES_PATH: /Users/alp/Documents/Corpora/OpenSubtitles2018/w2v/reapos_min5_heroes/dict_es_heroes.csv
+DICT_EN_PATH: /Users/alp/Documents/Corpora/OpenSubtitles2018/w2v/reapos_min5_heroes/dict_en_heroes.csv
+BASE_VOCABULARY_SIZE_EN: 30000
+BASE_VOCABULARY_SIZE_ES: 30000
+
+#LANGUAGE
+INPUT_LANG: en
+OUTPUT_LANG: es
+INPUT_LANG_OMIT_PUNC: True
+OUTPUT_LANG_OMIT_PUNC: False
+
+#NETWORK PARAMETERS
+MAX_SEQ_LENGTH: 40
+N_PROSODY_PARAMS: 3
+
+ATTN_MODEL: general
+ENCODER_TYPE: sum   #'sum' or 'parallel'
+HIDDEN_SIZE: 100
+N_LAYERS: 2
+DROPOUT: 0.1
+
+#NETWORK PARAMETERS - TEXT
+TEXT_CLIP: 50.0
+TEXT_LEARNING_RATE: 0.0001
+TEXT_DECODER_LEARNING_RATIO: 5.0
+TEXT_N_EPOCHS: 100
+TEXT_PATIENCE_EPOCHS: 3
+TEXT_TRAINING_BATCH_SIZE: 5
+
+TEXT_PRINT_EVERY_BATCH: 1
+TEXT_SAVE_EVERY_BATCH: 5
+
+#AUDIO CORPUS
+AUDIO_TRAIN_DATA_FILE: /Users/alp/Movies/heroes/transProse_data/transProse_audiodata_train.txt
+AUDIO_VALIDATION_DATA_FILE: /Users/alp/Movies/heroes/transProse_data/transProse_audiodata_validation.txt
+AUDIO_TEST_DATA_FILE: /Users/alp/Movies/heroes/transProse_data/transProse_audiodata_test.txt
+
+#NETWORK PARAMETERS - AUDIO
+AUDIO_CLIP: 50.0
+AUDIO_LEARNING_RATE: 0.0001
+AUDIO_DECODER_LEARNING_RATIO: 5.0
+AUDIO_N_EPOCHS: 20
+AUDIO_PATIENCE_EPOCHS: 2
+AUDIO_TRAINING_BATCH_SIZE: 5
+
+AUDIO_PRINT_EVERY_BATCH: 1
+AUDIO_SAVE_EVERY_BATCH: 5
+
+#PROSODIC PARAMETERS FOR AUDIO TRAINING
+INPUT_PROSODY: 
+  - pause_after
+#  - f0_mean
+#  - i0_mean
+
+OUTPUT_PROSODY:
+  - pause_after

@@ -43,9 +43,15 @@ def audio_batch_generator(audio_data, batch_size, input_lang, output_lang, n_pro
 			output_proscript = en_csv
 			#input_transcript = read_text_file(es_txt)
 			#output_transcript = read_text_file(en_txt)
-
 		input_word_tokens, input_prosody_tokens = read_data_from_proscript(input_proscript, input_lang, n_prosody_params, input_prosody_params)	
-		input_word_indexes = indexes_from_tokens(input_lang, input_word_tokens)
+
+		#DEBUG
+		# print(input_word_tokens)
+		# print_prosody(input_prosody_tokens)
+		# print(type(input_prosody_tokens))
+
+		input_word_indexes = indexes_from_tokens(input_lang, input_word_tokens)	#comes with END token
+		input_prosody_tokens = finalize_prosody_sequence(input_prosody_tokens) #adds the END token
 		input_word_seqs.append(input_word_indexes)
 		input_prosody_seqs.append(input_prosody_tokens)
 		
@@ -55,6 +61,8 @@ def audio_batch_generator(audio_data, batch_size, input_lang, output_lang, n_pro
 		target_seqs.append(target_word_indexes)
 
 		if len(input_word_seqs) == batch_size:
+
+
 			# Zip into pairs, sort by length (descending), unzip
 			seq_pairs = sorted(zip(input_word_seqs, input_prosody_seqs, target_seqs), key=lambda p: len(p[0]), reverse=True)
 			input_word_seqs, input_prosody_seqs, target_seqs = zip(*seq_pairs)
@@ -101,26 +109,22 @@ def main(options):
 	audio_train_data = read_audio_dataset_file(AUDIO_TRAIN_DATA_FILE, shuffle=False)
 	audio_validation_data = read_audio_dataset_file(AUDIO_TRAIN_DATA_FILE, shuffle=False)
 
-	w2v_model_es = gensim.models.Word2Vec.load(config["W2V_ES_PATH"])
-	w2v_model_en = gensim.models.Word2Vec.load(config["W2V_EN_PATH"])
-
-	BASE_VOCABULARY_SIZE_EN = config["BASE_VOCABULARY_SIZE_EN"]
-	BASE_VOCABULARY_SIZE_ES = config["BASE_VOCABULARY_SIZE_ES"]
-
 	INPUT_LANG_CODE = config['INPUT_LANG']
 	OUTPUT_LANG_CODE = config['OUTPUT_LANG']
 
 	if INPUT_LANG_CODE == 'en' and OUTPUT_LANG_CODE == 'es':
-		lang_en = input_lang = Lang(INPUT_LANG_CODE, config["W2V_EN_PATH"], BASE_VOCABULARY_SIZE_EN, omit_punctuation=config["INPUT_LANG_OMIT_PUNC"])
-		lang_es = output_lang = Lang(OUTPUT_LANG_CODE, config["W2V_ES_PATH"], BASE_VOCABULARY_SIZE_ES, omit_punctuation=config["OUTPUT_LANG_OMIT_PUNC"])
+		lang_en = input_lang = Lang(INPUT_LANG_CODE, config["W2V_EN_PATH"], config["DICT_EN_PATH"], omit_punctuation=config["INPUT_LANG_OMIT_PUNC"])
+		lang_es = output_lang = Lang(OUTPUT_LANG_CODE, config["W2V_ES_PATH"], config["DICT_ES_PATH"], omit_punctuation=config["OUTPUT_LANG_OMIT_PUNC"])
 	elif INPUT_LANG_CODE == 'es' and OUTPUT_LANG_CODE == 'en':
-		lang_es = input_lang = Lang(INPUT_LANG_CODE, config["W2V_ES_PATH"], BASE_VOCABULARY_SIZE_ES, omit_punctuation=config["INPUT_LANG_OMIT_PUNC"])
-		lang_en = output_lang = Lang(OUTPUT_LANG_CODE, config["W2V_EN_PATH"], BASE_VOCABULARY_SIZE_EN, omit_punctuation=config["OUTPUT_LANG_OMIT_PUNC"])
+		lang_es = input_lang = Lang(INPUT_LANG_CODE, config["W2V_ES_PATH"], config["DICT_ES_PATH"], omit_punctuation=config["INPUT_LANG_OMIT_PUNC"])
+		lang_en = output_lang = Lang(OUTPUT_LANG_CODE, config["W2V_EN_PATH"], config["DICT_EN_PATH"], omit_punctuation=config["OUTPUT_LANG_OMIT_PUNC"])
 
 	MAX_SEQ_LENGTH = int(config['MAX_SEQ_LENGTH'])
 	TRAINING_BATCH_SIZE = int(config['AUDIO_TRAINING_BATCH_SIZE'])
 	N_PROSODY_PARAMS = int(config['N_PROSODY_PARAMS'])
 	input_prosody_params = config['INPUT_PROSODY']
+	if input_prosody_params == None:
+		input_prosody_params = []
 
 	# Configure models
 	attn_model = config['ATTN_MODEL']
@@ -142,7 +146,7 @@ def main(options):
 
 	# Initialize models
 	if encoder_type == 'sum':
-		encoder = EncoderRNN(input_lang.vocabulary_size, N_PROSODY_PARAMS, hidden_size, input_lang.get_weights_matrix(), n_layers, dropout=dropout)
+		encoder = EncoderRNN_sum(input_lang.vocabulary_size, N_PROSODY_PARAMS, hidden_size, input_lang.get_weights_matrix(), n_layers, dropout=dropout)
 	elif encoder_type == 'parallel':
 		encoder = EncoderRNN_parallel(input_lang.vocabulary_size, N_PROSODY_PARAMS, hidden_size, input_lang.get_weights_matrix(), n_layers, dropout=dropout)
 	else:

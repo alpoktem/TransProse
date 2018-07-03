@@ -12,6 +12,7 @@ from collections import defaultdict
 import numpy as np
 import collections
 import torch
+from gensim.corpora import Dictionary
 from nltk.tokenize.toktok import ToktokTokenizer
 toktok = ToktokTokenizer()
 
@@ -24,30 +25,51 @@ EOS_TOKEN = 'END'
 SWT_TOKEN = 'SWITCH'  
 
 #Tokenization tools
-tokenizer_es = nltk.data.load('tokenizers/punkt/spanish.pickle')	#TEMPORARY COMMENT OUT FOR NLTK PUNKT BUG
-tokenizer_en = nltk.data.load('tokenizers/punkt/english.pickle')	#TEMPORARY COMMENT OUT FOR NLTK PUNKT BUG
+tokenizer_es = nltk.data.load('tokenizers/punkt/spanish.pickle')	
+tokenizer_en = nltk.data.load('tokenizers/punkt/english.pickle')	
 
-def tokenize_nltk(string, tokenizer=None, lang_code=None, to_lower = False):
-	tokens = []
-	if tokenizer == None:
-		if lang_code == 'en':
-			tokenizer = tokenizer_en
-		elif lang_code == 'es':
-			tokenizer = tokenizer_es
-	if to_lower:
-		string = string.lower()
-	for sent in tokenizer.tokenize(normalize(string)):
-		tokens.extend(toktok.tokenize(sent))
+ENGLISH_ENCLITICS = ['s', 'll', 't', 'd', 've', 're', 'm', 'clock', 'am', 'er', 'em', 'cuz']
 
-	return tokens
+def tokenize_es(string, to_lower = False):
+    tokens = []
+    if to_lower:
+        string = string.lower()
+    for sent in tokenizer_es.tokenize(normalize(string)):
+        tokens.extend(toktok.tokenize(sent))
+    return tokens
+
+def tokenize_en(string, to_lower = False):
+    tokens = []
+    if to_lower:
+        string = string.lower()
+        
+    for sent in tokenizer_en.tokenize(normalize(string)):
+        tokens.extend(toktok.tokenize(sent))
+        
+    #fix apostrophe
+    tokens_fix = []
+    tokens_index = 0
+    while tokens_index < len(tokens):
+        token =  tokens[tokens_index]
+        if token == "'":
+            if tokens_index + 1 < len(tokens):
+                next_token = tokens[tokens_index + 1]
+                if next_token.lower() in ENGLISH_ENCLITICS:
+                    tokens_fix.append("'" + next_token)
+                    tokens_index += 1
+                else:
+                    tokens_fix.append("'")
+            else:
+                tokens_fix.append("'")
+        else:
+            tokens_fix.append(tokens[tokens_index])
+        tokens_index += 1
+    return tokens_fix
 
 def normalize(line):
-	normalized = re.sub('-', ' - ', line)		#remove dash at the beginning
-	normalized = normalized.strip()
-	return normalized
-
-def normalize_string(string, tokenizer=None, lang_code=None):
-	return ' '.join(tokenize_nltk(string, tokenizer, lang_code))
+    normalized = re.sub('-', ' - ', line)
+    normalized = normalized.strip()
+    return normalized
 
 def indexes_from_sentence(lang, sentence):
 	tokens = lang.tokenize(sentence, to_lower = True)
@@ -59,25 +81,33 @@ def indexes_from_proscript(lang, proscript):
 
 # return index list from token list. adds EOS at the end
 def indexes_from_tokens(lang, tokens):
-	return [lang.word2index(token) for token in tokens] + [lang.SPECIAL_TOKEN2INDEX[EOS_TOKEN]]
+	return [lang.token2index(token) for token in tokens] + [lang.token2index(EOS_TOKEN)]
 
 # Creates dummy prosody vectors for given sentence tokens. adds extra vector for EOS
 def prosody_from_tokens(tokens, n_prosody_params):
 	return [[0.0] * n_prosody_params for token in tokens] + [[0.0] * n_prosody_params]
 
 def pad_seq(lang, seq, max_length):
-	seq += [lang.SPECIAL_TOKEN2INDEX[EMP_TOKEN] for i in range(max_length - len(seq))]
+	seq += [lang.token2index(EMP_TOKEN) for i in range(max_length - len(seq))]
 	return seq
 
+# def pad_prosody_seq(seq, max_length, n_prosody_params):
+# 	seq += [[0.0] * n_prosody_params for i in range(max_length - len(seq))]
+# 	return seq
+
 def pad_prosody_seq(seq, max_length, n_prosody_params):
-	seq += [[0.0] * n_prosody_params for i in range(max_length - len(seq))]
-	return seq
+    padding = np.zeros((max_length - len(seq), n_prosody_params ))
+    padded_seq = np.append(seq, padding, axis=0)
+    return padded_seq
 
 def remove_punc_tokens(tokens):
 	return [token for token in tokens if not re.search(r"\w+|'", token) == None]
 
 def readable_from_tokens(tokens):
 	return ' '.join(tokens)
+
+def print_prosody(prosody):
+    print(np.array(prosody).transpose())
 
 '''
 limits a sequence to max_length size. 
@@ -111,8 +141,8 @@ def save_model(encoder_state, decoder_state, losses, model_name, models_path, ch
 	"""Save checkpoint if a new best is achieved"""
 	if checkpoint:
 		print ("=> Saving checkpoint")
-		encoder_model_path = os.path.join(models_path, model_name + '_checkpoint_encoder' + '.model')
-		decoder_model_path = os.path.join(models_path, model_name + '_checkpoint_decoder' + '.model')	
+		encoder_model_path = os.path.join(models_path, model_name + '_encoder_checkpoint' + '.model')
+		decoder_model_path = os.path.join(models_path, model_name + '_decoder_checkpoint' + '.model')	
 	else:
 		print("==> Saving new best model")
 		encoder_model_path = os.path.join(models_path, model_name + '_encoder' + '.model')
@@ -136,29 +166,86 @@ def read_text_file(file):
 		return f.read()
 
 '''
+Reads dictionary file saved as csv. Each line has tab separated w2v_index and token.
+Returns index2token and token2index dictionaries
+'''
+def dict_from_file(filename):
+    idx2token = {}
+    #idx2w2v = {}
+    idx = 0
+    with open(filename) as f:
+        reader = csv.reader(f, delimiter='\t')
+        for row in reader:
+            idx2token[idx] = row[0]
+            #idx2w2v[idx] = int(row[1])
+            idx += 1
+
+    token2idx = {v: k for k, v in idx2token.items()}
+    return idx2token, token2idx
+
+# '''
+# reads proscript format transcription as a dictionary. 
+# n_prosody_params has to be larger than len(prosody_params)
+# '''
+# def read_data_from_proscript(filename, lang, n_prosody_params, prosody_params):
+# 	tokens = []
+# 	prosody_vectors = []
+	
+# 	with open(filename) as f:
+# 		reader = csv.DictReader(f, delimiter='|') # read rows into a dictionary format
+# 		for row in reader: # read a row as {column1: value1, column2: value2,...}
+# 			#word_tokens = lang.tokenize(row['word'])
+# 			word_tokens = re.split("(')", row['word'])	#TEMPORARY NLTK PUNKT BUG SOLUTION
+# 			tokens += word_tokens
+			
+# 			prosody_vector_token = [0.0] * n_prosody_params
+# 			if not prosody_params == None:
+# 				for index, prosody_param in enumerate(prosody_params):
+# 					prosody_vector_token[index] = float(row[prosody_param])
+
+# 			prosody_vectors += [prosody_vector_token] * len(word_tokens)
+
+# 	#prosody_vectors += [[0.0] * n_prosody_params]  #for end token   WHY????
+# 	return tokens, prosody_vectors
+
+'''
 reads proscript format transcription as a dictionary. 
 n_prosody_params has to be larger than len(prosody_params)
 '''
-def read_data_from_proscript(filename, lang, n_prosody_params, prosody_params):
-	tokens = []
-	prosody_vectors = []
-	
-	with open(filename) as f:
-		reader = csv.DictReader(f, delimiter='|') # read rows into a dictionary format
-		for row in reader: # read a row as {column1: value1, column2: value2,...}
-			#word_tokens = lang.tokenize(row['word'])
-			word_tokens = re.split("(')", row['word'])	#TEMPORARY NLTK PUNKT BUG SOLUTION
-			tokens += word_tokens
-			
-			prosody_vector_token = [0.0] * n_prosody_params
-			if not prosody_params == None:
-				for index, prosody_param in enumerate(prosody_params):
-					prosody_vector_token[index] = float(row[prosody_param])
+def read_data_from_proscript(filename, lang, n_prosody_params, prosody_params = []):
+    token_sequence = []
+    prosody_sequence = np.empty((0,n_prosody_params), float)
+    punctuation_sequence = []
 
-			prosody_vectors += [prosody_vector_token] * len(word_tokens)
+    with open(filename) as f:
+        reader = csv.DictReader(f, delimiter='|') # read rows into a dictionary format
+        for row in reader: # read a row as {column1: value1, column2: value2,...}
+            word_tokens = lang.tokenize(row['word'], to_lower = True)
+            token_sequence += word_tokens
+            
+            #prosody vector for each word token
+            prosody_vector = np.zeros((len(word_tokens), n_prosody_params ))
+            if not len(prosody_params) == 0:
+                for token_index, word_token in enumerate(word_tokens):
+                    for param_index, prosody_param in enumerate(prosody_params):
+                        if "mean" in prosody_param: 
+                            prosody_vector[token_index][param_index] = float(row[prosody_param])
+                        elif prosody_param == "pause_before" and token_index == 0:
+                            prosody_vector[token_index][param_index] = float(row[prosody_param])
+                        elif prosody_param == "pause_after" and token_index == len(word_tokens) - 1:
+                            prosody_vector[token_index][param_index] = float(row[prosody_param])
 
-	prosody_vectors += [[0.0] * n_prosody_params]  #for end token
-	return tokens, prosody_vectors
+            prosody_sequence = np.append(prosody_sequence, prosody_vector, axis=0)
+
+    return token_sequence, prosody_sequence
+
+'''
+adds a dummy prosody token at the end of a sequence to match with a finalized word sequence
+'''
+def finalize_prosody_sequence(prosody_sequence):
+	n_prosody_params = len(prosody_sequence[0])
+	prosody_sequence += [[0.0] * n_prosody_params]
+	return prosody_sequence
 
 '''
 Reads tokens (words and punctuation) from a proscript format transcription
@@ -178,80 +265,50 @@ def read_tokens_from_proscript(filename):
 	return tokens
 
 class Lang:
-	def __init__(self, lang_code, w2v_model_path, base_vocabulary_size, omit_punctuation=False):
+	def __init__(self, lang_code, w2v_model_path, lookup_table_path, omit_punctuation=False):
 		self.lang_code = lang_code
 		self.w2v_model = gensim.models.Word2Vec.load(w2v_model_path)
 		self.word_vectors = self.w2v_model.wv
-		self.base_vocabulary_size = base_vocabulary_size
-		self.vocabulary_size = base_vocabulary_size + 4
+		self.idx2token, self.token2idx = dict_from_file(lookup_table_path)
+		self.vocabulary_size = len(self.idx2token)
 		self.omit_punctuation = omit_punctuation
 
-		self.SPECIAL_TOKEN2INDEX = {EOS_TOKEN: base_vocabulary_size, 
-							   EMP_TOKEN: base_vocabulary_size + 1, 
-							   UNK_TOKEN: base_vocabulary_size + 2, 
-							   SWT_TOKEN: base_vocabulary_size + 3} 
+		print("%s Vocabulary size: %i"%(self.lang_code, self.vocabulary_size))
 
-		self.SPECIAL_INDEX2TOKEN = {v: k for k, v in self.SPECIAL_TOKEN2INDEX.items()}
+	def index2token(self, word_index):
+		try:
+			return self.idx2token[word_index]
+		except KeyError:
+			return UNK_TOKEN
 
-	def index2word(self, word_index):
-		if word_index in self.SPECIAL_INDEX2TOKEN:
-			return self.SPECIAL_INDEX2TOKEN[word_index]
-		else:
-			return self.word_vectors.index2word[word_index]
-
-	def word2index(self, word):
-		if word in self.SPECIAL_TOKEN2INDEX:
-			return self.SPECIAL_TOKEN2INDEX[word]
-		else:
-			word = word.lower()
-			if word not in self.word_vectors.vocab or self.word_vectors.vocab[word].index > self.base_vocabulary_size:
-				eprint("Unknown (%s): %s"%(self.lang_code, word))
-				return self.SPECIAL_TOKEN2INDEX[UNK_TOKEN]
-			else:
-				index = self.word_vectors.vocab[word].index
-				if index >= self.base_vocabulary_size:
-					return self.SPECIAL_TOKEN2INDEX[UNK_TOKEN]
-				else:
-					return index
+	def token2index(self, word):
+		try:
+			return self.token2idx[word]
+		except KeyError:
+			eprint("Unknown (%s): %s"%(self.lang_code, word))
+			return self.token2idx[UNK_TOKEN]
 
 	def word2vec(self, word):
-		if word in self.SPECIAL_TOKEN2INDEX:
+		try:
+			idx = self.token2idx[word]
 			return self.word_vectors[word]
-		else:
-			word = word.lower()
-			if word not in self.word_vectors.vocab or self.word_vectors.vocab[word].index > self.base_vocabulary_size:
-				return self.word_vectors[UNK_TOKEN]
-			else:
-				index = self.word_vectors.vocab[word].index
-				if index > self.base_vocabulary_size:
-					return self.word_vectors[UNK_TOKEN]
-				else:
-					return self.word_vectors[word]
-
-	def normalize_string(self, string):
-		if self.lang_code == 'en':
-			return normalize_string(string, tokenizer_en)
-		elif self.lang_code == 'es':
-			return normalize_string(string, tokenizer_es)
+		except KeyError:
+			return self.word_vectors[UNK_TOKEN]
 
 	def tokenize(self, string, to_lower = False):
 		if self.lang_code == 'en':
-			return tokenize_nltk(string, tokenizer_en, to_lower = to_lower)
+			return tokenize_en(string, to_lower = to_lower)
 		elif self.lang_code == 'es':
-			return tokenize_nltk(string, tokenizer_es, to_lower = to_lower)
+			return tokenize_es(string, to_lower = to_lower)
 
 	def get_weights_matrix(self):
 		weights_matrix = np.zeros((self.vocabulary_size, self.word_vectors.vector_size))
-
-		for index in range(self.vocabulary_size):
-			try: 
-				weights_matrix[index] = self.word_vectors.vectors[index]
-			except KeyError:
-				print("keyerr")
-				weights_matrix[index] = np.random.normal(scale=0.6, size=(self.word_vectors.vector_size, ))
-
-		for index in self.SPECIAL_INDEX2TOKEN:
-			weights_matrix[index] = self.word_vectors[self.SPECIAL_INDEX2TOKEN[index]]
+		for idx, token in self.idx2token.items():
+			# try: 
+			weights_matrix[idx] = self.word_vectors[token]
+			# except KeyError:
+			# 	print("keyerr")
+			# 	weights_matrix[index] = np.random.normal(scale=0.6, size=(self.word_vectors.vector_size, ))
 
 		self.weights_matrix = weights_matrix
 		return weights_matrix
