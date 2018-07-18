@@ -15,7 +15,7 @@ from utils import *
 from models import *
 import yaml
 
-def text_test_results_generator(data_path, encoder, decoder, input_lang, output_lang, n_prosody_params, max_seq_length, log_file=None, stop_at = -1, USE_CUDA=False):
+def text_test_results_generator(data_path, encoder, decoder, input_lang, output_lang, max_seq_length, log_file=None, stop_at = -1, USE_CUDA=False):
 	count = 0
 	if not log_file == None:
 		out_log_file = open(log_file, 'w')
@@ -39,15 +39,13 @@ def text_test_results_generator(data_path, encoder, decoder, input_lang, output_
 			if output_lang.omit_punctuation:
 				out_sentence_tokens = remove_punc_tokens(out_sentence_tokens)
 				
-			translation_tokens, attentions = evaluate(input_seq_tokens = in_sentence_tokens, 
-													  input_prosody_seq = None, 
-													  input_lang = input_lang, 
-													  output_lang = output_lang, 
-													  encoder = encoder, 
-													  decoder = decoder, 
-													  n_prosody_params = n_prosody_params, 
-													  max_length = max_seq_length,
-													  USE_CUDA = USE_CUDA)
+			translation_tokens, attentions = evaluate_text(input_seq_tokens = in_sentence_tokens, 
+														   input_lang = input_lang, 
+														   output_lang = output_lang, 
+														   encoder = encoder, 
+														   decoder = decoder, 
+														   max_length = max_seq_length,
+														   USE_CUDA = USE_CUDA)
 			count += 1
 
 			#log translations
@@ -120,6 +118,66 @@ def audio_test_results_generator(data_path, encoder, decoder, input_lang, output
 	if not log_file == None:
 		out_log_file.close()
 
+def evaluate_text(input_seq_tokens, input_lang, output_lang, encoder, decoder, max_length, USE_CUDA=False):
+	input_word_seqs = [indexes_from_tokens(input_lang, input_seq_tokens)]
+
+	#make sure sequences are below max_length. 
+	input_word_seqs = limit_seqs_to_max(input_word_seqs, max_length)
+
+	input_lengths = [len(input_word_seqs[0])]
+	input_word_batches = Variable(torch.LongTensor(input_word_seqs)).transpose(0, 1)
+
+	if USE_CUDA:
+		input_word_batches = input_batches.cuda()
+		input_prosody_batches = input_prosody_batches.cuda()
+		
+	# Set to not-training mode to disable dropout
+	encoder.train(False)
+	decoder.train(False)
+	
+	# Run through encoder
+	encoder_outputs, encoder_hidden = encoder(input_word_batches, input_lengths, None)
+
+	# Create starting vectors for decoder
+	decoder_input = Variable(torch.LongTensor([output_lang.token2index(SWT_TOKEN)])) # SOS
+	decoder_hidden = encoder_hidden[:decoder.n_layers] # Use last (forward) hidden state from encoder
+	
+	if USE_CUDA:
+		decoder_input = decoder_input.cuda()
+
+	# Store output words and attention states
+	decoded_words = []
+	decoder_attentions = torch.zeros(max_length + 1, max_length + 1)
+	
+	# Run through decoder
+	for di in range(max_length):
+		decoder_output, decoder_hidden, decoder_attention = decoder(
+			decoder_input, decoder_hidden, encoder_outputs
+		)
+		decoder_attentions[di,:decoder_attention.size(2)] += decoder_attention.squeeze(0).squeeze(0).cpu().data
+
+		# Choose top word from output
+		topv, topi = decoder_output.data.topk(1)
+		#ni = topi[0][0]  #old code
+		ni = topi.item()
+		if ni == output_lang.token2index(EOS_TOKEN):
+			decoded_words.append(EOS_TOKEN)
+			break
+		else:
+			decoded_words.append(output_lang.index2token(ni))
+			
+		# Next input is chosen word
+		decoder_input = Variable(torch.LongTensor([ni]))
+		if USE_CUDA: decoder_input = decoder_input.cuda()
+
+	# Set back to training mode
+	encoder.train(True)
+	decoder.train(True)
+	
+	return decoded_words, decoder_attentions[:di+1, :len(encoder_outputs)]
+
+
+
 def evaluate(input_seq_tokens, input_prosody_seq, input_lang, output_lang, encoder, decoder, n_prosody_params, max_length, USE_CUDA=False):
 	input_word_seqs = [indexes_from_tokens(input_lang, input_seq_tokens)]
 	if input_prosody_seq == None:
@@ -136,7 +194,8 @@ def evaluate(input_seq_tokens, input_prosody_seq, input_lang, output_lang, encod
 	input_prosody_batches = Variable(torch.FloatTensor(input_prosody_seqs)).transpose(0, 1)
 
 	if USE_CUDA:
-		input_batches = input_batches.cuda()
+		input_word_batches = input_batches.cuda()
+		input_prosody_batches = input_prosody_batches.cuda()
 		
 	# Set to not-training mode to disable dropout
 	encoder.train(False)
@@ -171,7 +230,7 @@ def evaluate(input_seq_tokens, input_prosody_seq, input_lang, output_lang, encod
 			decoded_words.append(EOS_TOKEN)
 			break
 		else:
-			decoded_words.append(output_lang.index2word(ni))
+			decoded_words.append(output_lang.index2token(ni))
 			
 		# Next input is chosen word
 		decoder_input = Variable(torch.LongTensor([ni]))
@@ -190,6 +249,7 @@ def main(options):
 	
 	USE_CUDA = options.use_cuda
 	print("Use cuda: %s" %USE_CUDA)
+
 
 	try:
 		with open(options.params_file, 'r') as ymlfile:
@@ -230,20 +290,24 @@ def main(options):
 	n_layers = int(config['N_LAYERS'])
 
 	# Initialize models
-	if encoder_type == 'sum':
-		encoder = EncoderRNN_sum(input_lang.vocabulary_size, N_PROSODY_PARAMS, hidden_size, input_lang.get_weights_matrix(), n_layers)
-	elif encoder_type == 'parallel':
-		encoder = EncoderRNN_parallel(input_lang.vocabulary_size, N_PROSODY_PARAMS, hidden_size, input_lang.get_weights_matrix(), n_layers)
+	if options.use_text_data:
+		encoder = GenericEncoder(input_lang.vocabulary_size, hidden_size, input_lang.get_weights_matrix(), n_layers)
+		decoder = LuongAttnDecoderRNN(attn_model, hidden_size, output_lang.vocabulary_size, n_layers)
 	else:
-		sys.exit("Unrecognized encoder type. Check params file. Exiting...")
-	decoder = LuongAttnDecoderRNN(attn_model, hidden_size, output_lang.vocabulary_size, n_layers)
-
+		if encoder_type == 'sum':
+			encoder = EncoderRNN_sum(input_lang.vocabulary_size, N_PROSODY_PARAMS, hidden_size, input_lang.get_weights_matrix(), n_layers)
+		elif encoder_type == 'parallel':
+			encoder = EncoderRNN_parallel(input_lang.vocabulary_size, N_PROSODY_PARAMS, hidden_size, input_lang.get_weights_matrix(), n_layers)
+		else:
+			sys.exit("Unrecognized encoder type. Check params file. Exiting...")
+		decoder = ProsodicDecoderRNN(attn_model, hidden_size, output_lang.vocabulary_size, n_layers)
+	
 	# Load states from models
-	load_model(encoder, decoder, options.encoder_model, options.decoder_model)
+	load_model(encoder, decoder, options.encoder_model, options.decoder_model, gpu_to_cpu=options.gpu2cpu)
 
 	#Initialize testing samples iterators
 	if options.use_text_data:
-		test_iterator = text_test_results_generator(TEST_DATA_PATH, encoder, decoder, input_lang, output_lang, N_PROSODY_PARAMS, MAX_SEQ_LENGTH, log_file=options.output_file, USE_CUDA=USE_CUDA)
+		test_iterator = text_test_results_generator(TEST_DATA_PATH, encoder, decoder, input_lang, output_lang, MAX_SEQ_LENGTH, log_file=options.output_file, USE_CUDA=USE_CUDA)
 	elif options.use_audio_data:
 		test_iterator = audio_test_results_generator(TEST_DATA_PATH, encoder, decoder, input_lang, output_lang, N_PROSODY_PARAMS, input_prosody_params, MAX_SEQ_LENGTH, log_file=options.output_file, USE_CUDA=False)
 
@@ -264,6 +328,7 @@ if __name__ == "__main__":
 	parser.add_option("-v", "--validate", dest="use_validation", default=False, help="use validation set as testing set", action="store_true")
 	parser.add_option("-t", "--text", dest="use_text_data", default=False, help="use text data", action="store_true")
 	parser.add_option("-a", "--audio", dest="use_audio_data", default=False, help="use audio data", action="store_true")
+	parser.add_option("-g", "--gpu2cpu", dest="gpu2cpu", default=False, help="load gpu model on cpu", action="store_true")
 
 	(options, args) = parser.parse_args()
 	main(options)
