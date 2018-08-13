@@ -30,7 +30,9 @@ tokenizer_en = nltk.data.load('tokenizers/punkt/english.pickle')
 
 ENGLISH_ENCLITICS = ['s', 'll', 't', 'd', 've', 're', 'm', 'clock', 'am', 'er', 'em', 'cuz']
 
-N_PROSODY_PARAMS = 3
+DEFAULT_N_PROSODY_PARAMS = 3
+
+MAIN_PUNCS = ['.', ',', '?']
 
 def tokenize_es(string, to_lower = False):
 	tokens = []
@@ -86,28 +88,35 @@ def indexes_from_tokens(lang, tokens):
 	return [lang.token2index(token) for token in tokens] + [lang.token2index(EOS_TOKEN)]
 
 # Creates dummy prosody vectors for given sentence tokens. adds extra vector for EOS
-def prosody_from_tokens(tokens, n_prosody_params=N_PROSODY_PARAMS):
+def prosody_from_tokens(tokens, n_prosody_params=DEFAULT_N_PROSODY_PARAMS):
 	return [[0.0] * n_prosody_params for token in tokens] + [[0.0] * n_prosody_params]
 
 def flags_from_prosody(prosody_seq):
 	return [[1 if not feature_value == 0.0  else 0 for feature_index, feature_value in enumerate(prosody_token)] for prosody_token in prosody_seq]
 
-def pad_seq(lang, seq, max_length):
-	seq += [lang.token2index(EMP_TOKEN) for i in range(max_length - len(seq))]
+def pad_seq(lang, seq, max_length, pad_value=EMP_TOKEN):
+	seq += [lang.token2index(pad_value) for i in range(max_length - len(seq))]
 	return seq
 
-def pad_prosody_seq(seq, max_length, n_prosody_params=N_PROSODY_PARAMS):
-	padding = np.zeros((max_length - len(seq), n_prosody_params ))
-	padded_seq = np.append(seq, padding, axis=0)
-	return padded_seq
+def pad_prosody_seq(seq, max_length, pad_values):
+	assert seq.shape[1] == len(pad_values)
+	padding = [pad_values] * (max_length - len(seq))
+	if padding:
+		padded_seq = np.append(seq, padding, axis=0)
+		return padded_seq
+	else:
+		return seq
 
-def pad_flag_seq(seq, max_length, n_prosody_params=N_PROSODY_PARAMS):
-	empty_flags = [0] * n_prosody_params
+def pad_flag_seq(seq, max_length, n_prosody_params=DEFAULT_N_PROSODY_PARAMS, pad_value = 0):
+	empty_flags = [pad_value] * n_prosody_params
 	seq += [empty_flags for i in range(max_length - len(seq))]
 	return seq
 
-def remove_punc_tokens(tokens):
-	return [token for token in tokens if not re.search(r"\w+|'", token) == None]
+def remove_punc_tokens(tokens, keep_main_puncs = False):
+	if keep_main_puncs:
+		return [token for token in tokens if not re.search(r"\w+|'|\.|\?|,", token) == None]
+	else:
+		return [token for token in tokens if not re.search(r"\w+|'", token) == None]
 
 def readable_from_tokens(tokens):
 	return ' '.join(tokens)
@@ -135,24 +144,27 @@ def normalize_value(value, min_value, max_value):
 		return 1.0
 	return (value - min_value) / (max_value - min_value)
 
+def unnormalize_value(value, min_value, max_value):
+	return value * (max_value - min_value) + min_value
+
 '''
 limits a sequence to max_length size. 
 Assumes that there is an END token at the end.
 '''
 def limit_seqs_to_max(sequences, max_length):
-    new_sequences = []
-    for seq in sequences:
-        if not len(seq) <= max_length:
-            trimmed = seq[0:max_length - 1]
-            print(len(trimmed))
-            end_token = seq[-1]
-            print(len([end_token]))
-            new_seq = np.concatenate((trimmed, [end_token]))
-            print(len(new_seq))
-        else:
-            new_seq = seq
-        new_sequences.append(new_seq)
-    return new_sequences
+	new_sequences = []
+	for seq in sequences:
+		if not len(seq) <= max_length:
+			trimmed = seq[0:max_length - 1]
+			#print(len(trimmed))
+			end_token = seq[-1]
+			#print(len([end_token]))
+			new_seq = np.concatenate((trimmed, [end_token]))
+			#print(len(new_seq))
+		else:
+			new_seq = seq
+		new_sequences.append(new_seq)
+	return new_sequences
 
 '''
 Audio dataset reader
@@ -167,7 +179,7 @@ def read_audio_dataset_file(audio_data_file, shuffle=False):
 		random.shuffle(audio_data)
 	return audio_data
 
-def load_audio_dataset(audio_data_file, input_lang, output_lang, n_prosody_params, input_prosody_params, output_prosody_params, shuffle=False):
+def load_audio_dataset(audio_data_file, input_lang, output_lang, n_prosody_params, input_prosody_params, output_prosody_params, dummyfy_input_prosody=False, dummyfy_output_prosody=False, shuffle=False):
 	audio_data = read_audio_dataset_file(audio_data_file, shuffle=False)
 
 	input_data = []
@@ -182,18 +194,40 @@ def load_audio_dataset(audio_data_file, input_lang, output_lang, n_prosody_param
 		if input_lang.lang_code == 'en' and output_lang.lang_code == 'es':
 			input_csv = en_csv
 			output_csv = es_csv
-			input_tokens, input_prosody = read_data_from_proscript(input_csv, input_lang, n_prosody_params, input_prosody_params, punctuation_as_tokens = not input_lang.omit_punctuation)
-			output_tokens, output_prosody = read_data_from_proscript(output_csv, output_lang, n_prosody_params, output_prosody_params, punctuation_as_tokens = not output_lang.omit_punctuation)
 		elif input_lang.lang_code == 'es' and output_lang.lang_code == 'en':
 			input_csv = es_csv
 			output_csv = en_csv
-			input_tokens, input_prosody = read_data_from_proscript(input_csv, input_lang, n_prosody_params, input_prosody_params, punctuation_as_tokens = not input_lang.omit_punctuation)
-			output_tokens, output_prosody = read_data_from_proscript(output_csv, output_lang, n_prosody_params, output_prosody_params, punctuation_as_tokens = not output_lang.omit_punctuation)
+			
+		if input_lang.punctuation_level == 0:
+			input_punc = False
+			input_only_main_punc = False
+		elif input_lang.punctuation_level == 1:
+			input_punc = True
+			input_only_main_punc = True
+		elif input_lang.punctuation_level == 2:
+			input_punc = True
+			input_only_main_punc = False
+			
+		if output_lang.punctuation_level == 0:
+			output_punc = False
+			output_only_main_punc = False
+		elif output_lang.punctuation_level == 1:
+			output_punc = True
+			output_only_main_punc = True
+		elif output_lang.punctuation_level == 2:
+			output_punc = True
+			output_only_main_punc = False
 
+		input_tokens, input_prosody = read_data_from_proscript(input_csv, input_lang, n_prosody_params, input_prosody_params, punctuation_as_tokens = input_punc, keep_only_main_puncs = input_only_main_punc)
+		output_tokens, output_prosody = read_data_from_proscript(output_csv, output_lang, n_prosody_params, output_prosody_params, punctuation_as_tokens = output_punc, keep_only_main_puncs = output_only_main_punc)
+
+		if dummyfy_input_prosody:
+			input_prosody = np.zeros_like(input_prosody)
+		if dummyfy_output_prosody:
+			output_prosody = np.zeros_like(output_prosody)
 
 		input_data.append((input_tokens, input_prosody, input_csv))
 		output_data.append((output_tokens, output_prosody, output_csv))
-
 
 	return input_data, output_data
 
@@ -266,7 +300,7 @@ def dict_from_file(filename):
 reads proscript format transcription as a dictionary. 
 n_prosody_params has to be larger than len(prosody_params)
 '''
-def read_data_from_proscript(filename, lang, n_prosody_params, prosody_params = [], punctuation_as_tokens=False):
+def read_data_from_proscript(filename, lang, n_prosody_params, prosody_params = [], punctuation_as_tokens=False, keep_only_main_puncs=False):
 	token_sequence = []
 	prosody_sequence = np.empty((0,n_prosody_params), float)
 	punctuation_sequence = []
@@ -277,8 +311,13 @@ def read_data_from_proscript(filename, lang, n_prosody_params, prosody_params = 
 		for row_index, row in enumerate(reader): # read a row as {column1: value1, column2: value2,...}
 			if punctuation_as_tokens and row['punctuation_before']:
 				punctuation_tokens = lang.tokenize(row['punctuation_before'])
-				token_sequence += punctuation_tokens
-				punc_prosody_vector = np.zeros((len(punctuation_tokens), n_prosody_params ))
+				if keep_only_main_puncs:
+					punctuation_tokens = [punc for punc in punctuation_tokens if punc in MAIN_PUNCS]
+				if len(punctuation_tokens) > 0:
+					token_sequence += punctuation_tokens
+					punc_prosody_vector = np.zeros((len(punctuation_tokens), n_prosody_params ))
+				else:
+					punc_prosody_vector = None
 			else:
 				punc_prosody_vector = None
 			
@@ -309,16 +348,18 @@ def read_data_from_proscript(filename, lang, n_prosody_params, prosody_params = 
 			
 			if punctuation_as_tokens and row['punctuation_after']:
 				punctuation_tokens = lang.tokenize(row['punctuation_after'])
-				token_sequence += punctuation_tokens
-				punc_prosody_vector = np.zeros((len(punctuation_tokens), n_prosody_params ))
-				if not len(prosody_params) == 0:
-					for param_index in (param_index for param_index in range(n_prosody_params) if param_index < len(prosody_params)):
-						prosody_param = prosody_params[param_index]
-						if "mean" in prosody_param: 
-							#insert the mean value of the word it's attached to
-							punc_prosody_vector[:,param_index] = prosody_sequence[-1][prosody_params.index(prosody_param)]
-				prosody_sequence = np.append(prosody_sequence, punc_prosody_vector, axis=0)
-			
+				if keep_only_main_puncs:
+					punctuation_tokens = [punc for punc in punctuation_tokens if punc in MAIN_PUNCS]
+				if len(punctuation_tokens) > 0:
+					token_sequence += punctuation_tokens
+					punc_prosody_vector = np.zeros((len(punctuation_tokens), n_prosody_params ))
+					if not len(prosody_params) == 0:
+						for param_index in (param_index for param_index in range(n_prosody_params) if param_index < len(prosody_params)):
+							prosody_param = prosody_params[param_index]
+							if "mean" in prosody_param: 
+								#insert the mean value of the word it's attached to
+								punc_prosody_vector[:,param_index] = prosody_sequence[-1][prosody_params.index(prosody_param)]
+					prosody_sequence = np.append(prosody_sequence, punc_prosody_vector, axis=0)
 				
 	#Last word shouldn't have a pause_after
 	if 'pause_after' in prosody_params and prosody_params.index('pause_after') < n_prosody_params:
@@ -331,9 +372,9 @@ def read_data_from_proscript(filename, lang, n_prosody_params, prosody_params = 
 adds a dummy prosody token at the end of a sequence to match with a finalized word sequence
 '''
 def finalize_prosody_sequence(prosody_sequence):
-    n_prosody_params = len(prosody_sequence[0])
-    prosody_sequence = np.vstack([prosody_sequence, [0.0] * n_prosody_params])
-    return prosody_sequence
+	n_prosody_params = len(prosody_sequence[0])
+	prosody_sequence = np.vstack([prosody_sequence, [0.0] * n_prosody_params])
+	return prosody_sequence
 
 '''
 Reads tokens (words and punctuation) from a proscript format transcription
@@ -353,13 +394,13 @@ def read_tokens_from_proscript(filename):
 	return tokens
 
 class Lang:
-	def __init__(self, lang_code, w2v_model_path, lookup_table_path, omit_punctuation=False):
+	def __init__(self, lang_code, w2v_model_path, lookup_table_path, punctuation_level = 2):
 		self.lang_code = lang_code
 		self.w2v_model = gensim.models.Word2Vec.load(w2v_model_path)
 		self.word_vectors = self.w2v_model.wv
 		self.idx2token, self.token2idx = dict_from_file(lookup_table_path)
 		self.vocabulary_size = len(self.idx2token)
-		self.omit_punctuation = omit_punctuation
+		self.punctuation_level = punctuation_level
 
 		print("%s Vocabulary size: %i"%(self.lang_code, self.vocabulary_size))
 
