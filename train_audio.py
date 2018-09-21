@@ -36,13 +36,15 @@ EARLY_STOP = True
 
 #Debug flags
 DO_TRAIN = True  #FOR DEBUGGING: If false, no training is performed dry run on batches
-AUDIO_ENCODE_ONLY = False
+AUDIO_ENCODE_ONLY = True
 DUMMY_PROSODY_INPUT = False	
 DUMMY_PROSODY_OUTPUT = False
 DEBUG_PRINT_SAMPLES = False
 DEBUG_PRINT_LOSSES = False
 
-def audio_batch_generator(audio_input_data, audio_output_data, batch_size, input_lang, output_lang, input_prosody_params, output_prosody_params, prosody_mins, prosody_maxs, input_prosody_norms, output_prosody_norms, n_prosody_params, USE_CUDA=False):
+PAUSE_LEVELS_FILE = "/Users/alp/phdCloud/playground/transProse/pause_levels_100.txt"
+
+def audio_batch_generator(audio_input_data, audio_output_data, batch_size, input_lang, output_lang, input_prosody_params, output_prosody_params, prosody_mins, prosody_maxs, input_prosody_norms, output_prosody_norms, n_prosody_params, pause_leveler, no_pause_levels, USE_CUDA=False):
 	assert not input_lang == output_lang
 	input_word_seqs = []
 	input_prosody_seqs = []
@@ -83,11 +85,6 @@ def audio_batch_generator(audio_input_data, audio_output_data, batch_size, input
 		target_flag_seqs.append(target_flag_tokens)
 
 		if len(input_word_seqs) == batch_size:
-			if DEBUG_PRINT_SAMPLES:
-				exit = input('...')
-				if exit == 'q':
-					break
-
 			# Zip into pairs, sort by length (descending), unzip
 			seq_pairs = sorted(zip(input_word_seqs, input_prosody_seqs, target_word_seqs, target_prosody_seqs, target_flag_seqs), key=lambda p: len(p[0]), reverse=True)
 			input_word_seqs, input_prosody_seqs, target_word_seqs, target_prosody_seqs, target_flag_seqs = zip(*seq_pairs)
@@ -110,6 +107,10 @@ def audio_batch_generator(audio_input_data, audio_output_data, batch_size, input
 			#normalize continuous values
 			input_prosody_padded_normalized = [normalize_prosody(s, input_prosody_mins, input_prosody_maxs) for s in input_prosody_padded] #no conversion of zeros to norm
 			target_prosody_padded_normalized = [normalize_prosody(s, output_prosody_mins, output_prosody_maxs, output_prosody_norms, f) for s,f in zip(target_prosody_padded, target_flag_seqs)]
+
+			#experimental prosody discretization
+			# input_prosody_padded_normalized = [normalize_prosody_discretization(s, [pause_leveler], [no_pause_levels]) for s in input_prosody_padded] #no conversion of zeros to norm
+			# target_prosody_padded_normalized = [normalize_prosody_discretization(s, [pause_leveler], [no_pause_levels]) for s in target_prosody_padded] #no conversion of zeros to norm
 
 			if DEBUG_PRINT_SAMPLES:
 				print("normalized input")
@@ -134,6 +135,11 @@ def audio_batch_generator(audio_input_data, audio_output_data, batch_size, input
 				target_word_var = target_word_var.cuda()
 				target_prosody_var = target_prosody_var.cuda()
 				target_flag_var = target_flag_var.cuda()
+
+			if DEBUG_PRINT_SAMPLES:
+				exit = input('...')
+				if exit == 'q':
+					break
 
 			yield input_word_var, input_prosody_var, input_lengths, target_word_var, target_prosody_var, target_flag_var, target_lengths
 			input_word_seqs = []
@@ -162,7 +168,7 @@ def run_forward_audio(input_word_batch, input_prosody_batch, input_lengths, targ
 	max_target_length = max(target_lengths)
 	all_decoder_outputs_word = Variable(torch.zeros(max_target_length, batch_size, decoder.output_size))
 	all_decoder_outputs_pauseflag = Variable(torch.zeros(max_target_length, batch_size, 2))
-	all_decoder_outputs_pausevalue = Variable(torch.zeros(max_target_length, batch_size, 1))
+	#all_decoder_outputs_pausevalue = Variable(torch.zeros(max_target_length, batch_size, 1)) #FLAGTEST
 
 	# Move new Variables to CUDA
 	if USE_CUDA:
@@ -170,7 +176,7 @@ def run_forward_audio(input_word_batch, input_prosody_batch, input_lengths, targ
 		decoder_context = decoder_context.cuda()
 		all_decoder_outputs_word = all_decoder_outputs_word.cuda()
 		all_decoder_outputs_pauseflag = all_decoder_outputs_pauseflag.cuda()
-		all_decoder_outputs_pausevalue = all_decoder_outputs_pausevalue.cuda()
+		#all_decoder_outputs_pausevalue = all_decoder_outputs_pausevalue.cuda() #FLAGTEST
 
 	# Run through decoder one time step at a time
 	for t in range(max_target_length):
@@ -178,14 +184,18 @@ def run_forward_audio(input_word_batch, input_prosody_batch, input_lengths, targ
 			decoder_output_word, decoder_context, decoder_hidden, decoder_attn = decoder(
 				decoder_word_input, decoder_context, decoder_hidden, encoder_outputs)
 		else:
-			decoder_output_word, decoder_output_pauseflag, decoder_output_pausevalue, decoder_context, decoder_hidden, decoder_attn = decoder(
+			# decoder_output_word, decoder_output_pauseflag, decoder_output_pausevalue, decoder_context, decoder_hidden, decoder_attn = decoder(
+			# 	decoder_word_input, decoder_context, decoder_hidden, encoder_outputs
+			# ) #FLAGTEST
+			decoder_output_word, decoder_output_pauseflag, decoder_context, decoder_hidden, decoder_attn = decoder(
 				decoder_word_input, decoder_context, decoder_hidden, encoder_outputs
 			)
+
 		
 		all_decoder_outputs_word[t] = decoder_output_word # Store this step's outputs
 		if not audio_encode_only:
 			all_decoder_outputs_pauseflag[t] = decoder_output_pauseflag
-			all_decoder_outputs_pausevalue[t] = decoder_output_pausevalue
+			#all_decoder_outputs_pausevalue[t] = decoder_output_pausevalue #FLAGTEST
 
 		decoder_word_input = target_word_batch[t] # Next input is current target
 
@@ -214,14 +224,15 @@ def run_forward_audio(input_word_batch, input_prosody_batch, input_lengths, targ
 		)
 		# print('pauseflag loss\n', loss_pauseflag)
 
-		loss_pausevalue = mse_criterion(all_decoder_outputs_pausevalue.squeeze(-1), target_prosody_batch[:,:,PROSODY_FEATURE_INDEXES['pause_after']])
+		#loss_pausevalue = mse_criterion(all_decoder_outputs_pausevalue.squeeze(-1), target_prosody_batch[:,:,PROSODY_FEATURE_INDEXES['pause_after']]) #FLAGTEST
 
-		loss_total, loss_word, loss_pauseflag, loss_pausevalue = calculate_loss_combination([word_loss_weight, pauseflag_loss_weight, pausevalue_loss_weight], [loss_word, loss_pauseflag, loss_pausevalue])
+		# loss_total, loss_word, loss_pauseflag, loss_pausevalue = calculate_loss_combination([word_loss_weight, pauseflag_loss_weight, pausevalue_loss_weight], [loss_word, loss_pauseflag, loss_pausevalue]) #FLAGTEST
+		loss_total, loss_word, loss_pauseflag = calculate_loss_combination([word_loss_weight, pauseflag_loss_weight], [loss_word, loss_pauseflag])
 
 		if DEBUG_PRINT_LOSSES:
 			print('pausevalue pred,\n', all_decoder_outputs_pausevalue.squeeze(-1))
 			print('pausevalue gold,\n', target_prosody_batch[:,:,PROSODY_FEATURE_INDEXES['pause_after']])
-			print('pausevalue loss,\n',loss_pausevalue)
+			# print('pausevalue loss,\n',loss_pausevalue) #FLAGTEST
 			print('pauseflag loss,\n',loss_pauseflag)
 			print('loss_total,\n',loss_total)
 
@@ -229,17 +240,7 @@ def run_forward_audio(input_word_batch, input_prosody_batch, input_lengths, targ
 			if exit == 'q':
 				sys.exit()
 
-	return loss_total, loss_word, loss_pauseflag, loss_pausevalue
-
-def calculate_loss_combination_regularized(weights, loss_values):
-	assert len(weights) == len(loss_values)
-	loss_comb = 0
-	weighted_losses = []
-	for w, l in zip(weights, loss_values):
-		weighted_loss = (1/(2*w**2))*l + math.log(1 + w**2)
-		loss_comb += weighted_loss
-		weighted_losses.append(weighted_loss)
-	return loss_comb, weighted_losses[0], weighted_losses[1], weighted_losses[2]
+	return loss_total, loss_word, loss_pauseflag#, loss_pausevalue
 
 def calculate_loss_combination(weights, loss_values):
 	assert len(weights) == len(loss_values)
@@ -249,7 +250,25 @@ def calculate_loss_combination(weights, loss_values):
 		weighted_loss = w*l
 		loss_comb += weighted_loss
 		weighted_losses.append(weighted_loss)
-	return loss_comb, weighted_losses[0], weighted_losses[1], weighted_losses[2]
+
+	return_list = [loss_comb]
+	for loss in weighted_losses:
+		return_list += [loss]
+	return return_list
+
+def calculate_loss_combination_regularized(weights, loss_values):
+	assert len(weights) == len(loss_values)
+	loss_comb = 0
+	weighted_losses = []
+	for w, l in zip(weights, loss_values):
+		weighted_loss = (1/(2*w**2))*l + math.log(1 + w**2)
+		loss_comb += weighted_loss
+		weighted_losses.append(weighted_loss)
+
+	return_list = [loss_comb]
+	for loss in weighted_losses:
+		return_list += [loss]
+	return return_list
 
 def main(options):
 	USE_CUDA = options.use_cuda
@@ -297,8 +316,8 @@ def main(options):
 		output_prosody_norms = config['PROSODY_FEATURE_NORMS_EN']
 
 	print("Loading audio data...", end='')
-	audio_train_input_data, audio_train_output_data = load_audio_dataset(AUDIO_TRAIN_DATA_FILE, input_lang, output_lang, N_PROSODY_PARAMS, input_prosody_params, output_prosody_params, dummyfy_input_prosody=DUMMY_PROSODY_INPUT, dummyfy_output_prosody=DUMMY_PROSODY_OUTPUT)
-	audio_validation_input_data, audio_validation_output_data = load_audio_dataset(AUDIO_VALIDATION_DATA_FILE, input_lang, output_lang, N_PROSODY_PARAMS, input_prosody_params, output_prosody_params, dummyfy_input_prosody=DUMMY_PROSODY_INPUT, dummyfy_output_prosody=DUMMY_PROSODY_OUTPUT)
+	train_input_data, train_output_data = load_audio_dataset(AUDIO_TRAIN_DATA_FILE, input_lang, output_lang, N_PROSODY_PARAMS, input_prosody_params, output_prosody_params, dummyfy_input_prosody=DUMMY_PROSODY_INPUT, dummyfy_output_prosody=DUMMY_PROSODY_OUTPUT)
+	validation_input_data, validation_output_data = load_audio_dataset(AUDIO_VALIDATION_DATA_FILE, input_lang, output_lang, N_PROSODY_PARAMS, input_prosody_params, output_prosody_params, dummyfy_input_prosody=DUMMY_PROSODY_INPUT, dummyfy_output_prosody=DUMMY_PROSODY_OUTPUT)
 	print("DONE.")
 
 	prosody_mins = config['PROSODY_FEATURE_MINS']
@@ -319,12 +338,12 @@ def main(options):
 	patience_epochs = int(config['AUDIO_PATIENCE_EPOCHS'])
 	print_every_batch = int(config['AUDIO_PRINT_EVERY_BATCH'])
 	save_every_batch = int(config['AUDIO_SAVE_EVERY_BATCH'])
-	training_data_size = len(audio_train_input_data)
+	training_data_size = len(train_input_data)
 	no_of_batch_in_epoch = training_data_size/TRAINING_BATCH_SIZE  
 
 	# Initialize models
 	if encoder_type == 'sum':
-		encoder = EncoderRNN_sum(input_lang.vocabulary_size, N_PROSODY_PARAMS, hidden_size, input_lang.get_weights_matrix(), n_layers, dropout=dropout)
+		encoder = EncoderRNN_sum_ver(input_lang.vocabulary_size, N_PROSODY_PARAMS, hidden_size, input_lang.get_weights_matrix(), n_layers, dropout=dropout)
 	elif encoder_type == 'parallel':
 		encoder = EncoderRNN_parallel(input_lang.vocabulary_size, N_PROSODY_PARAMS, hidden_size, input_lang.get_weights_matrix(), n_layers, dropout=dropout)
 	else:
@@ -348,6 +367,9 @@ def main(options):
 	decoder_optimizer = optim.Adam(filter(lambda p: p.requires_grad,decoder.parameters()), lr=learning_rate * decoder_learning_ratio)
 	#loss_weights_optimizer = optim.Adam(loss_weight_generator, lr=learning_rate)
 	mse_criterion = nn.MSELoss(size_average=False)
+
+	#Experimental pause leveling
+	pause_leveler, no_pause_levels = get_level_maker(PAUSE_LEVELS_FILE)
 
 	# Move models to GPU
 	if USE_CUDA:
@@ -381,7 +403,7 @@ def main(options):
 			validation_batch = 0
 
 			# Train 
-			for batch in audio_batch_generator(audio_train_input_data, audio_train_output_data, TRAINING_BATCH_SIZE, input_lang, output_lang, input_prosody_params, output_prosody_params, prosody_mins, prosody_maxs, input_prosody_norms, output_prosody_norms, n_prosody_params=N_PROSODY_PARAMS, USE_CUDA=USE_CUDA):
+			for batch in audio_batch_generator(train_input_data, train_output_data, TRAINING_BATCH_SIZE, input_lang, output_lang, input_prosody_params, output_prosody_params, prosody_mins, prosody_maxs, input_prosody_norms, output_prosody_norms, n_prosody_params=N_PROSODY_PARAMS, pause_leveler = pause_leveler, no_pause_levels = no_pause_levels, USE_CUDA=USE_CUDA):
 				input_word_batch, input_prosody_batch, input_lengths, target_word_batch, target_prosody_batch, target_flag_batch, target_lengths = batch
 				
 				# for i, token in enumerate(target_word_batch):
@@ -431,11 +453,15 @@ def main(options):
 						print_summary = '%s (Batch:%d/%d %d%%) (Epoch: %d/%d) Loss:%.4f' % (time_since(start, training_batch / no_of_batch_in_epoch), training_batch, no_of_batch_in_epoch, training_batch / no_of_batch_in_epoch * 100, epoch, n_epochs, print_loss_avgs[0])
 						loss_report = [print_loss_avgs[0], word_loss_weight.item()]
 					else:
-						print_summary = '%s (Batch:%d/%d %d%%) (Epoch: %d/%d) Loss:%.4f (word: %.4f, pflag: %.4f, pval: %.4f)' % (time_since(start, training_batch / no_of_batch_in_epoch), training_batch, no_of_batch_in_epoch, training_batch / no_of_batch_in_epoch * 100, epoch, n_epochs, print_loss_avgs[0], print_loss_avgs[1], print_loss_avgs[2], print_loss_avgs[3])
-						loss_report = [print_loss_avgs[0], word_loss_weight.item(), print_loss_avgs[1], pauseflag_loss_weight.item(), print_loss_avgs[2], pausevalue_loss_weight.item(), print_loss_avgs[3]]
+						#FLAGTEST
+						#print_summary = '%s (Batch:%d/%d %d%%) (Epoch: %d/%d) Loss:%.4f (word: %.4f, pflag: %.4f, pval: %.4f)' % (time_since(start, training_batch / no_of_batch_in_epoch), training_batch, no_of_batch_in_epoch, training_batch / no_of_batch_in_epoch * 100, epoch, n_epochs, print_loss_avgs[0], print_loss_avgs[1], print_loss_avgs[2], print_loss_avgs[3])
+						#loss_report = [print_loss_avgs[0], word_loss_weight.item(), print_loss_avgs[1], pauseflag_loss_weight.item(), print_loss_avgs[2], pausevalue_loss_weight.item(), print_loss_avgs[3]]
+						print_summary = '%s (Batch:%d/%d %d%%) (Epoch: %d/%d) Loss:%.4f (word: %.4f, pflag: %.4f)' % (time_since(start, training_batch / no_of_batch_in_epoch), training_batch, no_of_batch_in_epoch, training_batch / no_of_batch_in_epoch * 100, epoch, n_epochs, print_loss_avgs[0], print_loss_avgs[1], print_loss_avgs[2])
+						loss_report = [print_loss_avgs[0], word_loss_weight.item(), print_loss_avgs[1], pauseflag_loss_weight.item(), print_loss_avgs[2]]
 					
 					print(print_summary)
-					log_loss(options.train_log_file, loss_report)
+					if options.train_log_file:
+						log_loss(options.train_log_file, loss_report)
 
 				if training_batch % save_every_batch == 0:
 					save_loss_avgs = np.array(save_loss_totals) / save_every_batch
@@ -451,7 +477,7 @@ def main(options):
 			print("VALIDATION ", end='')
 			validation_loss_totals = [0] * NO_OF_LOSSES
 			validation_batch = 0
-			for batch in audio_batch_generator(audio_validation_input_data, audio_validation_output_data, 1, input_lang, output_lang, input_prosody_params, output_prosody_params, prosody_mins, prosody_maxs, input_prosody_norms, output_prosody_norms, n_prosody_params=N_PROSODY_PARAMS, USE_CUDA=USE_CUDA):
+			for batch in audio_batch_generator(validation_input_data, validation_output_data, 1, input_lang, output_lang, input_prosody_params, output_prosody_params, prosody_mins, prosody_maxs, input_prosody_norms, output_prosody_norms, n_prosody_params=N_PROSODY_PARAMS, pause_leveler = pause_leveler, no_pause_levels = no_pause_levels, USE_CUDA=USE_CUDA):
 				input_word_batch, input_prosody_batch, input_lengths, target_word_batch, target_prosody_batch, target_flag_batch, target_lengths = batch
 				
 				loss_values = validate(  input_word_batch=input_word_batch,
@@ -480,16 +506,16 @@ def main(options):
 			validation_loss_avgs = np.array(validation_loss_totals) / validation_batch
 			if AUDIO_ENCODE_ONLY:
 				validation_summary = 'at Epoch: %d/%d Average Loss:%.4f (word: %.4f)' % (epoch, n_epochs, validation_loss_avgs[0], validation_loss_avgs[1])
+				loss_report = [validation_loss_avgs[0]]
 			else:
-				validation_summary = 'at Epoch: %d/%d Average Loss:%.4f (word: %.4f, pauseflag: %.4f, pauseval:%.4f)' % (epoch, n_epochs, validation_loss_avgs[0], validation_loss_avgs[1], validation_loss_avgs[2], validation_loss_avgs[3])
+				# validation_summary = 'at Epoch: %d/%d Average Loss:%.4f (word: %.4f, pauseflag: %.4f, pauseval:%.4f)' % (epoch, n_epochs, validation_loss_avgs[0], validation_loss_avgs[1], validation_loss_avgs[2], validation_loss_avgs[3]) #FLAGTEST
+				# loss_report = [validation_loss_avgs[0], validation_loss_avgs[1], validation_loss_avgs[2], validation_loss_avgs[3]] #FLAGTEST
+				validation_summary = 'at Epoch: %d/%d Average Loss:%.4f (word: %.4f, pauseflag: %.4f)' % (epoch, n_epochs, validation_loss_avgs[0], validation_loss_avgs[1], validation_loss_avgs[2])
+				loss_report = [validation_loss_avgs[0], validation_loss_avgs[1], validation_loss_avgs[2]]   #FLAGTEST
+
 			print(validation_summary)
 
 			if (options.validation_log_file):
-				if AUDIO_ENCODE_ONLY:
-					loss_report = [validation_loss_avgs[0]]
-				else:
-					loss_report = [validation_loss_avgs[0], validation_loss_avgs[1], validation_loss_avgs[2], validation_loss_avgs[3]]
-
 				log_loss(options.validation_log_file, loss_report)
 			
 			if EARLY_STOP:
@@ -516,7 +542,7 @@ def main(options):
 	else:
 		all_pause_values_en = []
 		all_pause_values_es = []
-		for batch in audio_batch_generator(audio_train_input_data, audio_train_output_data, TRAINING_BATCH_SIZE, input_lang, output_lang, input_prosody_params, output_prosody_params, prosody_mins, prosody_maxs, input_prosody_norms, output_prosody_norms, n_prosody_params=N_PROSODY_PARAMS, USE_CUDA=USE_CUDA):
+		for batch in audio_batch_generator(train_input_data, train_output_data, TRAINING_BATCH_SIZE, input_lang, output_lang, input_prosody_params, output_prosody_params, prosody_mins, prosody_maxs, input_prosody_norms, output_prosody_norms, n_prosody_params=N_PROSODY_PARAMS, USE_CUDA=USE_CUDA):
 				input_word_batch, input_prosody_batch, input_lengths, target_word_batch, target_prosody_batch, target_flag_batch, target_lengths = batch
 
 				# print('input_word_batch', input_word_batch)

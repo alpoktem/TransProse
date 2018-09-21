@@ -32,9 +32,39 @@ class GenericEncoder(nn.Module):
 		outputs = outputs[:, :, :self.hidden_size] + outputs[:, : ,self.hidden_size:] # Sum bidirectional outputs
 		return outputs, hidden
 
-class EncoderRNN_sum(nn.Module):
+#Discrete pause input
+class EncoderRNN_discrete_pause(nn.Module):
+	def __init__(self, input_size, hidden_size, weights_matrix, n_layers=1, dropout=0.1):
+		super(EncoderRNN_sum_ver, self).__init__()
+		
+		self.input_size = input_size
+		self.hidden_size = hidden_size
+		self.n_layers = n_layers
+		self.dropout = dropout
+
+		self.embedding = nn.Embedding.from_pretrained(torch.FloatTensor(weights_matrix))
+		self.embedding_linear = nn.Linear(GENSIM_VEC_SIZE, hidden_size) #Linear layer to increase embedding vector size
+		self.pause_embedding = nn.Embedding(100, hidden_size)
+
+
+		self.gru = nn.GRU(hidden_size, hidden_size, n_layers, dropout=self.dropout, bidirectional=True)
+
+		
+	def forward(self, input_word_seqs, input_pause_seqs, input_lengths, hidden=None):
+		# Note: we run this all at once (over multiple batches of multiple sequences)
+		embedded = self.embedding_linear(self.embedding(input_word_seqs))
+		embedded_pause = self.pause_embedding(input_pause_seqs)
+		input_seq = embedded + embedded_pause   #sum word embedding and prosody vector
+		packed = torch.nn.utils.rnn.pack_padded_sequence(input_seq, input_lengths)
+		outputs, hidden = self.gru(packed, hidden)
+		outputs, output_lengths = torch.nn.utils.rnn.pad_packed_sequence(outputs) # unpack (back to padded)
+		outputs = outputs[:, :, :self.hidden_size] + outputs[:, : ,self.hidden_size:] # Sum bidirectional outputs
+		return outputs, hidden
+
+#Gradual continous prosody input
+class EncoderRNN_sum_ver(nn.Module):
 	def __init__(self, input_size, n_prosody_params, hidden_size, weights_matrix, n_layers=1, dropout=0.1):
-		super(EncoderRNN_sum, self).__init__()
+		super(EncoderRNN_sum_ver, self).__init__()
 		
 		self.input_size = input_size
 		self.hidden_size = hidden_size
@@ -44,22 +74,27 @@ class EncoderRNN_sum(nn.Module):
 
 		self.embedding = nn.Embedding.from_pretrained(torch.FloatTensor(weights_matrix))
 		self.embedding_linear = nn.Linear(GENSIM_VEC_SIZE, hidden_size) #Linear layer to increase embedding vector size
-		self.prosody = nn.Linear(n_prosody_params, hidden_size) #Linear layer
+		self.prosody1 = nn.Linear(n_prosody_params, int(hidden_size/4)) #Linear layer
+		self.prosody2 = nn.Linear(int(hidden_size/4), int(hidden_size/2)) #Linear layer
+		self.prosody3 = nn.Linear(int(hidden_size/2), hidden_size) #Linear layer
 		self.gru = nn.GRU(hidden_size, hidden_size, n_layers, dropout=self.dropout, bidirectional=True)
 
 		#initialize prosody layer weights to zero (EXPERIMENTAL)
-		self.prosody.weight.data = torch.zeros([hidden_size, n_prosody_params])
+		self.prosody1.weight.data = torch.zeros([int(hidden_size/4), n_prosody_params])
+		self.prosody2.weight.data = torch.zeros([int(hidden_size/2), int(hidden_size/4)])
+		self.prosody3.weight.data = torch.zeros([int(hidden_size), int(hidden_size/2)])
 		
 	def forward(self, input_word_seqs, input_pros_seqs, input_lengths, hidden=None):
 		# Note: we run this all at once (over multiple batches of multiple sequences)
 		embedded = self.embedding_linear(self.embedding(input_word_seqs))
-		prosody_vec = self.prosody(input_pros_seqs)
+		prosody_vec = self.prosody3(F.tanh(self.prosody2(F.tanh(self.prosody1(input_pros_seqs)))))
 		input_seq = embedded + prosody_vec   #sum word embedding and prosody vector
 		packed = torch.nn.utils.rnn.pack_padded_sequence(input_seq, input_lengths)
 		outputs, hidden = self.gru(packed, hidden)
 		outputs, output_lengths = torch.nn.utils.rnn.pad_packed_sequence(outputs) # unpack (back to padded)
 		outputs = outputs[:, :, :self.hidden_size] + outputs[:, : ,self.hidden_size:] # Sum bidirectional outputs
 		return outputs, hidden
+
 
 class EncoderRNN_parallel(nn.Module):
 	def __init__(self, input_size, n_prosody_params, hidden_size, weights_matrix, n_layers=1, dropout=0.1):
@@ -245,19 +280,18 @@ class ProsodicDecoderRNN(nn.Module):
 		self.concat = nn.Linear(hidden_size * 2, hidden_size)
 		self.out = nn.Linear(hidden_size, output_size)
 		self.pause_flag_out = nn.Linear(hidden_size * 2, 2)   #Linear
-		#self.prosody_out_layers = [nn.Linear(hidden_size * (self.n_layers + 1), 1) for prosody_param_id in range(self.n_prosody_params)] #All linear
-		self.pause_value_out = nn.Linear(hidden_size * 2, 1)   #Linear
+		#self.pause_value_out = nn.Linear(hidden_size * 2, 1)   #Linear
 		
 		# Choose attention model
 		if attn_model != 'none':
 			self.attn = Attn_m(attn_model, hidden_size, USE_CUDA)
 
-	def forward(self, input_word_seq, last_context, last_hidden, encoder_outputs):
+	def forward(self, input_at_t, last_context, last_hidden, encoder_outputs):
 		# Note: we run this one step at a time
 		
 		# Get the embedding of the current input word (last output word)
-		batch_size = input_word_seq.size(0)
-		embedded = self.embedding_linear(self.embedding(input_word_seq))	
+		batch_size = input_at_t.size(0)
+		embedded = self.embedding_linear(self.embedding(input_at_t))	
 		embedded = self.embedding_dropout(embedded)
 		embedded = embedded.view(1, batch_size, self.hidden_size) # S=1 x B x N
 
@@ -272,7 +306,7 @@ class ProsodicDecoderRNN(nn.Module):
 
 		# Calculate attention from current RNN state and all encoder outputs;
 		# apply to encoder outputs to get weighted average
-		attn_weights = self.attn(rnn_output, encoder_outputs)
+		attn_weights = self.attn(rnn_output, encoder_outputs) # B x 1 x S
 		context = attn_weights.bmm(encoder_outputs.transpose(0, 1)) # B x S=1 x N
 
 		# Attentional vector using the RNN hidden state and context vector
@@ -289,7 +323,8 @@ class ProsodicDecoderRNN(nn.Module):
 		prosody_input = torch.cat((hidden[-1], concat_output), 1) # B x N*2
 				
 		pause_flag_output = self.pause_flag_out(prosody_input)
-		pause_value_output = F.sigmoid(self.pause_value_out(prosody_input))
+		#pause_value_output = F.sigmoid(self.pause_value_out(prosody_input))
 		
 		# Return final output, hidden state, and attention weights (for visualization)
-		return token_output, pause_flag_output, pause_value_output, context, hidden, attn_weights
+		#return token_output, pause_flag_output, pause_value_output, context, hidden, attn_weights
+		return token_output, pause_flag_output, context, hidden, attn_weights

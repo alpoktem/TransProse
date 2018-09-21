@@ -123,7 +123,7 @@ def run_forward_text(input_word_batch, input_prosody_batch, input_lengths, targe
 		use_cuda = USE_CUDA
 	)
 
-	return loss, None , None , None
+	return loss, None , None # , None #FLAGTEST
 
 def train(input_word_batch, input_prosody_batch, input_lengths, target_word_batch, target_prosody_batch, target_flag_batch, target_lengths, input_lang, output_lang, batch_size, encoder, decoder, clip, encoder_optimizer, decoder_optimizer, run_forward_func, mse_criterion=None, word_loss_weight=None, pauseflag_loss_weight=None, pausevalue_loss_weight=None, loss_weights_optimizer=None, audio_encode_only=False, USE_CUDA=False):
 	# Set models to train
@@ -136,7 +136,9 @@ def train(input_word_batch, input_prosody_batch, input_lengths, target_word_batc
 	if loss_weights_optimizer is not None:
 		loss_weights_optimizer.zero_grad()
 
-	[loss_total, loss_word, loss_pauseflag, loss_pausevalue] = run_forward_func(input_word_batch, input_prosody_batch, input_lengths, target_word_batch, target_prosody_batch, target_flag_batch, target_lengths, input_lang, output_lang, batch_size, encoder, decoder, mse_criterion, word_loss_weight, pauseflag_loss_weight, pausevalue_loss_weight, audio_encode_only, USE_CUDA)
+	losses = run_forward_func(input_word_batch, input_prosody_batch, input_lengths, target_word_batch, target_prosody_batch, target_flag_batch, target_lengths, input_lang, output_lang, batch_size, encoder, decoder, mse_criterion, word_loss_weight, pauseflag_loss_weight, pausevalue_loss_weight, audio_encode_only, USE_CUDA)
+	#[loss_total, loss_word, loss_pauseflag, loss_pausevalue] = losses #FLAGTEST
+	[loss_total, loss_word, loss_pauseflag] = losses
 
 	# Backpropagate
 	loss_total.backward()
@@ -154,7 +156,7 @@ def train(input_word_batch, input_prosody_batch, input_lengths, target_word_batc
 	if loss_weights_optimizer is not None:
 		loss_weights_optimizer.step()
 
-	loss_values = [loss_type.item() for loss_type in [loss_total, loss_word, loss_pauseflag, loss_pausevalue] if loss_type is not None]
+	loss_values = [loss_type.item() for loss_type in losses if loss_type is not None]
 	
 	return loss_values, ec, dc
 
@@ -166,9 +168,11 @@ def validate(input_word_batch, input_prosody_batch, input_lengths, target_word_b
 	# Zero gradients of both optimizers
 	dev_loss = 0
 
-	[loss_total, loss_word, loss_pauseflag, loss_pausevalue] = run_forward_func(input_word_batch, input_prosody_batch, input_lengths, target_word_batch, target_prosody_batch, target_flag_batch, target_lengths, input_lang, output_lang, batch_size, encoder, decoder, mse_criterion, word_loss_weight, pauseflag_loss_weight, pausevalue_loss_weight, audio_encode_only, USE_CUDA)
-
-	loss_values = [loss_type.item() for loss_type in [loss_total, loss_word, loss_pauseflag, loss_pausevalue] if loss_type is not None]
+	losses = run_forward_func(input_word_batch, input_prosody_batch, input_lengths, target_word_batch, target_prosody_batch, target_flag_batch, target_lengths, input_lang, output_lang, batch_size, encoder, decoder, mse_criterion, word_loss_weight, pauseflag_loss_weight, pausevalue_loss_weight, audio_encode_only, USE_CUDA)
+	#[loss_total, loss_word, loss_pauseflag, loss_pausevalue] = losses #FLAGTEST
+	[loss_total, loss_word, loss_pauseflag] = losses
+	
+	loss_values = [loss_type.item() for loss_type in losses if loss_type is not None]
 
 	return loss_values
 
@@ -247,7 +251,8 @@ def main(options):
 	plot_loss_total = 0 # Reset every plot_every
 
 	#Initialize the loss log file
-	initialize_log_loss(options.log_file, LOSS_LOG_COLUMNS)
+	if options.log_file:
+		initialize_log_loss(options.log_file, LOSS_LOG_COLUMNS)
 
 	# Begin!
 	ecs = []
@@ -297,7 +302,8 @@ def main(options):
 				print_loss_total = 0
 				print_summary = '%s (Batch:%d/%d %d%%) (Epoch: %d/%d) Loss:%.4f' % (time_since(start, training_batch / no_of_batch_in_epoch), training_batch, no_of_batch_in_epoch, training_batch / no_of_batch_in_epoch * 100, epoch, n_epochs, print_loss_avg)
 				print(print_summary)
-				log_loss(options.log_file, [print_loss_avg])
+				if options.log_file:
+					log_loss(options.log_file, [print_loss_avg])
 
 			if training_batch % save_every_batch == 0:
 				plot_loss_avg = float(plot_loss_total / save_every_batch)

@@ -7,16 +7,14 @@ import time
 import datetime
 import math
 import csv
+import torch
 import nltk.data
 from collections import defaultdict
 import numpy as np
 import collections
-import torch
 from gensim.corpora import Dictionary
 from nltk.tokenize.toktok import ToktokTokenizer
 toktok = ToktokTokenizer()
-
-from torch.nn.utils.rnn import pad_packed_sequence, pack_padded_sequence
 
 #SPECIAL TOKENS
 UNK_TOKEN = 'UNKNOWN'
@@ -137,6 +135,12 @@ def normalize_prosody(prosody_seq, min_values, max_values, norm_values=None, fla
 					prosody_token[feature_index] = normalize_value(prosody_token[feature_index], min_values[feature_index], max_values[feature_index])
 	return prosody_seq
 
+def normalize_prosody_discretization(prosody_seq, leveler_list, no_levels_list):
+	for token_index, prosody_token in enumerate(prosody_seq):
+		for feature_index, feature_value in enumerate(prosody_token):
+			prosody_token[feature_index] = leveler_list[feature_index](prosody_token[feature_index]) / no_levels_list[feature_index]
+	return prosody_seq
+
 def normalize_value(value, min_value, max_value):
 	if value <= min_value:
 		return 0.0
@@ -244,7 +248,7 @@ def save_model(encoder_state, decoder_state, model_name, models_path, checkpoint
 		print("==> Saving new best model")
 		encoder_model_path = os.path.join(models_path, model_name + '_encoder' + '.model')
 		decoder_model_path = os.path.join(models_path, model_name + '_decoder' + '.model')	
-	
+
 	torch.save(encoder_state, encoder_model_path)  # save checkpoint
 	torch.save(decoder_state, decoder_model_path)  # save checkpoint
 
@@ -261,6 +265,7 @@ def initialize_log_loss(loss_file, header):
 
 def load_model(encoder, decoder, encoder_model_path, decoder_model_path, gpu_to_cpu=False):
 	print('gpu2cpu:', gpu_to_cpu)
+
 	if gpu_to_cpu:
 		loaded_encoder_state_dict = torch.load(encoder_model_path, map_location='cpu')
 		loaded_decoder_state_dict = torch.load(decoder_model_path, map_location='cpu')
@@ -393,16 +398,45 @@ def read_tokens_from_proscript(filename):
 				tokens.append(row['punctuation_after'])
 	return tokens
 
-class Lang:
-	def __init__(self, lang_code, w2v_model_path, lookup_table_path, punctuation_level = 2):
-		self.lang_code = lang_code
-		self.w2v_model = gensim.models.Word2Vec.load(w2v_model_path)
-		self.word_vectors = self.w2v_model.wv
-		self.idx2token, self.token2idx = dict_from_file(lookup_table_path)
-		self.vocabulary_size = len(self.idx2token)
-		self.punctuation_level = punctuation_level
+'''
+Prosody manipulation
+'''
+#leveler function factory
+def get_level_maker(levels_file):
+	levels_list = levels_from_file(levels_file)
+	def get_level(value):
+		level = 0
+		for level_bin in levels_list:
+			if value > level_bin:
+				level +=1
+			else:
+				return level
+		return level
 
-		print("%s Vocabulary size: %i"%(self.lang_code, self.vocabulary_size))
+	no_of_levels = len(levels_list) + 1
+	return get_level, no_of_levels
+
+def levels_from_file(filename):
+	with open(filename) as f:
+		lst = [float(line.rstrip()) for line in f]
+	return lst
+
+
+'''
+Utility classes
+'''
+
+class Lang:
+	def __init__(self, lang_code, w2v_model_path=None, lookup_table_path=None, punctuation_level = 2):
+		self.lang_code = lang_code
+		if not w2v_model_path == None:
+			self.w2v_model = gensim.models.Word2Vec.load(w2v_model_path)
+			self.word_vectors = self.w2v_model.wv
+		if not lookup_table_path == None:
+			self.idx2token, self.token2idx = dict_from_file(lookup_table_path)
+			self.vocabulary_size = len(self.idx2token)
+			print("%s Vocabulary size: %i"%(self.lang_code, self.vocabulary_size))
+		self.punctuation_level = punctuation_level
 
 	def index2token(self, word_index):
 		try:
