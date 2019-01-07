@@ -20,7 +20,10 @@ toktok = ToktokTokenizer()
 UNK_TOKEN = 'UNKNOWN'
 EMP_TOKEN = 'EMPTY'
 EOS_TOKEN = 'END'
-SWT_TOKEN = 'SWITCH'  
+SWT_TOKEN = 'SWITCH'
+
+#PROSCRIPT SPECIAL TOKENS
+END_TOKEN = '<END>'
 
 #Tokenization tools
 tokenizer_es = nltk.data.load('tokenizers/punkt/spanish.pickle')	
@@ -183,7 +186,7 @@ def read_audio_dataset_file(audio_data_file, shuffle=False):
 		random.shuffle(audio_data)
 	return audio_data
 
-def load_audio_dataset(audio_data_file, input_lang, output_lang, n_prosody_params, input_prosody_params, output_prosody_params, dummyfy_input_prosody=False, dummyfy_output_prosody=False, shuffle=False):
+def load_audio_dataset(audio_data_file, input_lang, output_lang, input_prosody_params, output_prosody_params, n_prosody_params=None, dummyfy_input_prosody=False, dummyfy_output_prosody=False, shuffle=False):
 	audio_data = read_audio_dataset_file(audio_data_file, shuffle=False)
 
 	input_data = []
@@ -305,8 +308,10 @@ def dict_from_file(filename):
 reads proscript format transcription as a dictionary. 
 n_prosody_params has to be larger than len(prosody_params)
 '''
-def read_data_from_proscript(filename, lang, n_prosody_params, prosody_params = [], punctuation_as_tokens=False, keep_only_main_puncs=False):
+def read_data_from_proscript(filename, lang, n_prosody_params=None, prosody_params = [], punctuation_as_tokens=False, keep_only_main_puncs=False):
 	token_sequence = []
+	if n_prosody_params == None:
+		n_prosody_params = len(prosody_params)
 	prosody_sequence = np.empty((0,n_prosody_params), float)
 	punctuation_sequence = []
 	last_word_index = 0
@@ -314,6 +319,8 @@ def read_data_from_proscript(filename, lang, n_prosody_params, prosody_params = 
 	with open(filename) as f:
 		reader = csv.DictReader(f, delimiter='|') # read rows into a dictionary format
 		for row_index, row in enumerate(reader): # read a row as {column1: value1, column2: value2,...}
+			
+			#take punctuation before the current word
 			if punctuation_as_tokens and row['punctuation_before']:
 				punctuation_tokens = lang.tokenize(row['punctuation_before'])
 				if keep_only_main_puncs:
@@ -326,20 +333,24 @@ def read_data_from_proscript(filename, lang, n_prosody_params, prosody_params = 
 			else:
 				punc_prosody_vector = None
 			
-			#prosody vector for each word token
-			word_tokens = lang.tokenize(row['word'])   
-			token_sequence += word_tokens
-			prosody_vector = np.zeros((len(word_tokens), n_prosody_params ))
-			#if not len(prosody_params) == 0:
-			for param_index in (param_index for param_index in range(n_prosody_params) if param_index < len(prosody_params)):
-				prosody_param = prosody_params[param_index]
-				for token_index, token in enumerate(word_tokens):
-					if "mean" in prosody_param: 
-						prosody_vector[token_index][param_index] = float(row[prosody_param])
-					elif prosody_param == "pause_before" and token_index == 0 and not row_index == 0:
-						prosody_vector[token_index][param_index] = float(row[prosody_param])
-					elif prosody_param == "pause_after" and token_index == len(word_tokens) - 1:
-						prosody_vector[token_index][param_index] = float(row[prosody_param])
+			#prosody vector for each word token (a word entry can consist of many tokens)
+			word_tokens = lang.tokenize(row['word'])
+			if END_TOKEN not in word_tokens: 
+				token_sequence += word_tokens
+				prosody_vector = np.zeros((len(word_tokens), n_prosody_params ))
+				#if not len(prosody_params) == 0:
+				for param_index in (param_index for param_index in range(n_prosody_params) if param_index < len(prosody_params)):
+					prosody_param = prosody_params[param_index]
+					for token_index, token in enumerate(word_tokens):
+						if "mean" in prosody_param: 
+							prosody_vector[token_index][param_index] = float(row[prosody_param])
+						elif prosody_param == "pause_before" and token_index == 0 and not row_index == 0:
+							prosody_vector[token_index][param_index] = float(row[prosody_param])
+						elif prosody_param == "pause_after" and token_index == len(word_tokens) - 1:
+							prosody_vector[token_index][param_index] = float(row[prosody_param])
+				empty_prosody_vector = False
+			else:
+				empty_prosody_vector = True
 
 			if punc_prosody_vector is not None:
 				for param_index in (param_index for param_index in range(n_prosody_params) if param_index < len(prosody_params)):
@@ -348,9 +359,11 @@ def read_data_from_proscript(filename, lang, n_prosody_params, prosody_params = 
 						#insert the mean value of the word it's attached to
 						punc_prosody_vector[:,param_index] = prosody_vector[-1][prosody_params.index(prosody_param)]
 				prosody_sequence = np.append(prosody_sequence, punc_prosody_vector, axis=0)
-			prosody_sequence = np.append(prosody_sequence, prosody_vector, axis=0)
-			last_word_index = len(prosody_sequence) - 1
+			if not empty_prosody_vector:
+				prosody_sequence = np.append(prosody_sequence, prosody_vector, axis=0)
+				last_word_index = len(prosody_sequence) - 1
 			
+			#take punctuation after the current word
 			if punctuation_as_tokens and row['punctuation_after']:
 				punctuation_tokens = lang.tokenize(row['punctuation_after'])
 				if keep_only_main_puncs:
@@ -448,7 +461,7 @@ class Lang:
 		try:
 			return self.token2idx[word]
 		except KeyError:
-			eprint("Unknown (%s): %s"%(self.lang_code, word))
+			#eprint("Unknown (%s): %s"%(self.lang_code, word))
 			return self.token2idx[UNK_TOKEN]
 
 	def word2vec(self, word):

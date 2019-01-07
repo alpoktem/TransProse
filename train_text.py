@@ -230,7 +230,7 @@ def main(options):
 
 	# Load states from models if given
 	if not options.resume_encoder == None and not options.resume_decoder == None:
-		load_model(encoder, decoder, options.resume_encoder, options.resume_decoder)
+		load_model(encoder, decoder, options.resume_encoder, options.resume_decoder, gpu_to_cpu=options.gpu2cpu)
 
 	# Initialize optimizers
 	encoder_optimizer = optim.Adam(filter(lambda p: p.requires_grad,encoder.parameters()), lr=learning_rate)
@@ -362,6 +362,7 @@ if __name__ == "__main__":
 	parser.add_option("-m", "--modelname", dest="model_name", default=None, help="output model filename", type="string")
 	parser.add_option("-d", "--modeldir", dest="model_dir", default=None, help="directory to store model", type="string")
 	parser.add_option("-c", "--usecuda", dest="use_cuda", default=False, help="train on gpu", action="store_true")
+	parser.add_option("-g", "--gpu2cpu", dest="gpu2cpu", default=False, help="load gpu model on cpu", action="store_true")
 	parser.add_option("-p", "--params", dest="params_file", default=None, help="params filename", type="string")
 	parser.add_option("-e", "--resumeencoder", dest="resume_encoder", default=None, help="encoder model to resume training from", type="string")
 	parser.add_option("-r", "--resumedecoder", dest="resume_decoder", default=None, help="decoder model to resume training from", type="string")
