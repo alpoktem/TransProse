@@ -292,13 +292,11 @@ Returns index2token and token2index dictionaries
 '''
 def dict_from_file(filename):
 	idx2token = {}
-	#idx2w2v = {}
 	idx = 0
 	with open(filename, encoding='utf-8') as f:
-		reader = csv.reader(f, delimiter='\t')
+		reader = csv.reader(f, delimiter='\t', quotechar=None)
 		for row in reader:
 			idx2token[idx] = row[0]
-			#idx2w2v[idx] = int(row[1])
 			idx += 1
 
 	token2idx = {v: k for k, v in idx2token.items()}
@@ -442,10 +440,10 @@ Utility classes
 class Lang:
 	def __init__(self, lang_code, w2v_model_path=None, lookup_table_path=None, punctuation_level = 2):
 		self.lang_code = lang_code
-		if not w2v_model_path == None:
+		if not w2v_model_path is None:
 			self.w2v_model = gensim.models.Word2Vec.load(w2v_model_path)
 			self.word_vectors = self.w2v_model.wv
-		if not lookup_table_path == None:
+		if not lookup_table_path is None:
 			self.idx2token, self.token2idx = dict_from_file(lookup_table_path)
 			self.vocabulary_size = len(self.idx2token)
 			print("%s Vocabulary size: %i"%(self.lang_code, self.vocabulary_size))
@@ -478,16 +476,15 @@ class Lang:
 			return tokenize_es(string, to_lower = to_lower)
 
 	def get_weights_matrix(self):
-		weights_matrix = np.zeros((self.vocabulary_size, self.word_vectors.vector_size))
-		for idx, token in self.idx2token.items():
-			# try: 
-			weights_matrix[idx] = self.word_vectors[token]
-			# except KeyError:
-			# 	print("keyerr")
-			# 	weights_matrix[index] = np.random.normal(scale=0.6, size=(self.word_vectors.vector_size, ))
+		try:
+			weights_matrix = np.zeros((self.vocabulary_size, self.word_vectors.vector_size))
+			for idx, token in self.idx2token.items():
+				weights_matrix[idx] = self.word_vectors[token]
 
-		self.weights_matrix = weights_matrix
-		return weights_matrix
+			self.weights_matrix = weights_matrix
+			return weights_matrix
+		except:
+			return None
 
 def checkArgument(argname, isFile=False, isDir=False, createDir=False):
 	if not argname:

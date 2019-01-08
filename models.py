@@ -10,7 +10,7 @@ import numpy as np
 GENSIM_VEC_SIZE = 100
 
 class GenericEncoder(nn.Module):
-	def __init__(self, input_size, hidden_size, weights_matrix, n_layers=1, dropout=0.1):
+	def __init__(self, input_size, hidden_size, weights_matrix=None, n_layers=1, dropout=0.1, rnn_type='GRU'):
 		super(GenericEncoder, self).__init__()
 
 		self.input_size = input_size
@@ -18,16 +18,29 @@ class GenericEncoder(nn.Module):
 		self.n_layers = n_layers
 		self.dropout = dropout
 
-		self.embedding = nn.Embedding.from_pretrained(torch.FloatTensor(weights_matrix))
-		self.embedding_linear = nn.Linear(GENSIM_VEC_SIZE, hidden_size) #Linear layer to increase embedding vector size
-		self.gru = nn.GRU(hidden_size, hidden_size, n_layers, dropout=self.dropout, bidirectional=True)
+		if not weights_matrix is None:
+			self.pretrained_embeddings = True
+			self.pre_embedding = nn.Embedding.from_pretrained(torch.FloatTensor(weights_matrix))
+			self.embedding = nn.Linear(GENSIM_VEC_SIZE, hidden_size) #Linear layer to increase embedding vector size
+		else:
+			self.pretrained_embeddings = False
+			self.embedding = nn.Embedding(input_size, hidden_size)
+		
+		if rnn_type == 'LSTM':
+			self.rnn = nn.LSTM(hidden_size, hidden_size, n_layers, dropout=self.dropout, bidirectional=True)
+		else:
+			self.rnn = nn.GRU(hidden_size, hidden_size, n_layers, dropout=self.dropout, bidirectional=True)
 
 	def forward(self, input_word_seqs, input_lengths, hidden=None):
 		# Note: we run this all at once (over multiple batches of multiple sequences)
-		embedded = self.embedding_linear(self.embedding(input_word_seqs))
-		input_seq = embedded   #sum word embedding and prosody vector
+		if self.pretrained_embeddings:
+			embedded = self.embedding(self.pre_embedding(input_word_seqs))
+		else:
+			embedded = self.embedding(input_word_seqs)
+
+		input_seq = embedded   
 		packed = torch.nn.utils.rnn.pack_padded_sequence(input_seq, input_lengths)
-		outputs, hidden = self.gru(packed, hidden)
+		outputs, hidden = self.rnn(packed, hidden)
 		outputs, output_lengths = torch.nn.utils.rnn.pad_packed_sequence(outputs) # unpack (back to padded)
 		outputs = outputs[:, :, :self.hidden_size] + outputs[:, : ,self.hidden_size:] # Sum bidirectional outputs
 		return outputs, hidden
@@ -195,7 +208,7 @@ class Attn(nn.Module):
         return energy
 
 class LuongAttnDecoderRNN(nn.Module):
-	def __init__(self, attn_model, hidden_size, weights_matrix, output_size, n_layers=1, dropout=0.1, input_feed=False, USE_CUDA=False):
+	def __init__(self, attn_model, hidden_size, output_size, weights_matrix=None, n_layers=1, dropout=0.1, input_feed=False, rnn_type='GRU', USE_CUDA=False):
 		super(LuongAttnDecoderRNN, self).__init__()
 
 		# Keep for reference
@@ -207,13 +220,25 @@ class LuongAttnDecoderRNN(nn.Module):
 		self.input_feed = input_feed
 
 		# Define layers
-		self.embedding = nn.Embedding.from_pretrained(torch.FloatTensor(weights_matrix))     
-		self.embedding_linear = nn.Linear(GENSIM_VEC_SIZE, hidden_size) #Linear layer to increase embedding vector size     
+		if not weights_matrix is None:
+			self.pretrained_embeddings = True
+			self.pre_embedding = nn.Embedding.from_pretrained(torch.FloatTensor(weights_matrix))     
+			self.embedding = nn.Linear(GENSIM_VEC_SIZE, hidden_size) #Linear layer to increase embedding vector size     
+		else:
+			self.pretrained_embeddings = False
+			self.embedding = nn.Embedding(output_size, hidden_size)
+		
 		self.embedding_dropout = nn.Dropout(dropout)
 		if self.input_feed:
-			self.gru = nn.GRU(hidden_size * 2 , hidden_size, n_layers, dropout=dropout)
+			rnn_input_size = hidden_size * 2 
 		else:
-			self.gru = nn.GRU(hidden_size , hidden_size, n_layers, dropout=dropout)
+			rnn_input_size = hidden_size
+
+		if rnn_type == 'LSTM':
+			self.rnn = nn.LSTM(rnn_input_size, hidden_size, n_layers, dropout=dropout)
+		else:
+			self.rnn = nn.GRU(rnn_input_size, hidden_size, n_layers, dropout=dropout)
+
 		self.concat = nn.Linear(hidden_size * 2, hidden_size)
 		self.out = nn.Linear(hidden_size, output_size)
 		
@@ -226,17 +251,21 @@ class LuongAttnDecoderRNN(nn.Module):
 
 		# Get the embedding of the current input word (last output word)
 		batch_size = input_at_t.size(0)
-		embedded = self.embedding_linear(self.embedding(input_at_t))	 #B x N
+		if self.pretrained_embeddings:
+			embedded = self.embedding(self.pre_embedding(input_at_t))	 #B x N
+		else:
+			embedded = self.embedding(input_at_t)
+
 		embedded = self.embedding_dropout(embedded)
 		embedded = embedded.view(1, batch_size, self.hidden_size) # S=1 x B x N
 
 		if self.input_feed:
 			# Combine embedded input word and last context, run through RNN
 			rnn_input = torch.cat((embedded, last_context.unsqueeze(0)), 2)
-			rnn_output, hidden = self.gru(rnn_input, last_hidden) # rnn_output S=1 x B x N, hidden L x B X N
+			rnn_output, hidden = self.rnn(rnn_input, last_hidden) # rnn_output S=1 x B x N, hidden L x B X N
 		else:
 			# Get current hidden state from input word and last hidden state
-			rnn_output, hidden = self.gru(embedded, last_hidden)
+			rnn_output, hidden = self.rnn(embedded, last_hidden)
 
 		# Calculate attention from current RNN state and all encoder outputs;
 		# apply to encoder outputs to get weighted average

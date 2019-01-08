@@ -20,6 +20,9 @@ import csv
 
 LOSS_LOG_COLUMNS = ["Loss"]
 
+#Debug flags
+DO_TRAIN = True  #FOR DEBUGGING: If false, no training is performed
+
 #generates batch from given parallel data file... 
 #parallel data file has tab separated english and spanish sentence pairs (tokenized) at each line
 def batch_generator(data_path, batch_size, input_lang, output_lang, tokenize=False, USE_CUDA=False):
@@ -193,13 +196,29 @@ def main(options):
 	OUTPUT_LANG_CODE = config['OUTPUT_LANG']
 
 	TEXT_DATA_TOKENIZED = config['TEXT_TOKENIZED']
+	LOAD_PREEMBEDDINGS = config['LOAD_PREEMBEDDINGS']
+	COMMON_DICT = config['COMMON_DICT']
+
+	if LOAD_PREEMBEDDINGS:
+		W2V_EN_PATH = config["W2V_EN_PATH"]
+		W2V_ES_PATH = config["W2V_ES_PATH"]
+	else:
+		W2V_EN_PATH = None
+		W2V_ES_PATH = None
+
+	if COMMON_DICT:
+		DICT_EN_PATH = config["DICT_PATH"]
+		DICT_ES_PATH = config["DICT_PATH"]
+	else:
+		DICT_EN_PATH = config["DICT_EN_PATH"]
+		DICT_ES_PATH = config["DICT_ES_PATH"]
 
 	if INPUT_LANG_CODE == 'en' and OUTPUT_LANG_CODE == 'es':
-		lang_en = input_lang = Lang(INPUT_LANG_CODE, config["W2V_EN_PATH"], config["DICT_EN_PATH"], punctuation_level=config["INPUT_LANG_PUNC_LEVEL"])
-		lang_es = output_lang = Lang(OUTPUT_LANG_CODE, config["W2V_ES_PATH"], config["DICT_ES_PATH"], punctuation_level=config["OUTPUT_LANG_PUNC_LEVEL"])
+		lang_en = input_lang = Lang(INPUT_LANG_CODE, W2V_EN_PATH, DICT_EN_PATH, punctuation_level=config["INPUT_LANG_PUNC_LEVEL"])
+		lang_es = output_lang = Lang(OUTPUT_LANG_CODE, W2V_ES_PATH, DICT_ES_PATH, punctuation_level=config["OUTPUT_LANG_PUNC_LEVEL"])
 	elif INPUT_LANG_CODE == 'es' and OUTPUT_LANG_CODE == 'en':
-		lang_es = input_lang = Lang(INPUT_LANG_CODE, config["W2V_ES_PATH"], config["DICT_ES_PATH"], punctuation_level=config["INPUT_LANG_PUNC_LEVEL"])
-		lang_en = output_lang = Lang(OUTPUT_LANG_CODE, config["W2V_EN_PATH"], config["DICT_EN_PATH"], punctuation_level=config["OUTPUT_LANG_PUNC_LEVEL"])
+		lang_es = input_lang = Lang(INPUT_LANG_CODE, W2V_ES_PATH, DICT_ES_PATH, punctuation_level=config["INPUT_LANG_PUNC_LEVEL"])
+		lang_en = output_lang = Lang(OUTPUT_LANG_CODE, W2V_EN_PATH, DICT_EN_PATH, punctuation_level=config["OUTPUT_LANG_PUNC_LEVEL"])
 
 	MAX_SEQ_LENGTH = int(config['MAX_SEQ_LENGTH'])
 	TRAINING_BATCH_SIZE = int(config['TEXT_TRAINING_BATCH_SIZE'])
@@ -226,7 +245,7 @@ def main(options):
 
 	# Initialize models
 	encoder = GenericEncoder(input_lang.vocabulary_size, hidden_size, input_lang.get_weights_matrix(), n_layers, dropout=dropout)
-	decoder = LuongAttnDecoderRNN(attn_model, hidden_size, input_lang.get_weights_matrix(), output_lang.vocabulary_size, n_layers, dropout=dropout, input_feed=decoder_input_feed)
+	decoder = LuongAttnDecoderRNN(attn_model, hidden_size, output_lang.vocabulary_size, input_lang.get_weights_matrix(), n_layers, dropout=dropout, input_feed=decoder_input_feed)
 
 	# Load states from models if given
 	if not options.resume_encoder == None and not options.resume_decoder == None:
@@ -242,119 +261,120 @@ def main(options):
 		encoder.cuda()
 		decoder.cuda()
 
-	# Keep track of time elapsed and running averages
-	start = time.time()
-	losses = []
-	plot_losses = []
-	validation_losses = []
-	print_loss_total = 0 # Reset every print_every
-	plot_loss_total = 0 # Reset every plot_every
+	if DO_TRAIN:
+		# Keep track of time elapsed and running averages
+		start = time.time()
+		losses = []
+		plot_losses = []
+		validation_losses = []
+		print_loss_total = 0 # Reset every print_every
+		plot_loss_total = 0 # Reset every plot_every
 
-	#Initialize the loss log file
-	if options.log_file:
-		initialize_log_loss(options.log_file, LOSS_LOG_COLUMNS)
+		#Initialize the loss log file
+		if options.log_file:
+			initialize_log_loss(options.log_file, LOSS_LOG_COLUMNS)
 
-	# Begin!
-	ecs = []
-	dcs = []
-	eca = 0
-	dca = 0
+		# Begin!
+		ecs = []
+		dcs = []
+		eca = 0
+		dca = 0
 
-	epoch = 1
-	
-	while epoch <= n_epochs:
-		training_batch = 0
-		validation_batch = 0
-		line_in_training_file = 0
-		line_in_validation_file = 0
-		# Train 
-		for input_word_batch, input_lengths, target_word_batch, target_lengths in batch_generator(TRAIN_DATA_PATH, TRAINING_BATCH_SIZE, input_lang, output_lang, tokenize = not TEXT_DATA_TOKENIZED, USE_CUDA=USE_CUDA):
-			# Run the train function
-			loss_values, ec, dc = train(input_word_batch=input_word_batch,
+		epoch = 1
+		
+		while epoch <= n_epochs:
+			training_batch = 0
+			validation_batch = 0
+			line_in_training_file = 0
+			line_in_validation_file = 0
+			# Train 
+			for input_word_batch, input_lengths, target_word_batch, target_lengths in batch_generator(TRAIN_DATA_PATH, TRAINING_BATCH_SIZE, input_lang, output_lang, tokenize = not TEXT_DATA_TOKENIZED, USE_CUDA=USE_CUDA):
+				# Run the train function
+				loss_values, ec, dc = train(input_word_batch=input_word_batch,
+									 input_prosody_batch=None, 
+									 input_lengths=input_lengths, 
+									 target_word_batch=target_word_batch,
+									 target_prosody_batch=None,
+									 target_flag_batch=None, 
+									 target_lengths=target_lengths,
+									 input_lang=input_lang, 
+									 output_lang=output_lang,
+									 batch_size=TRAINING_BATCH_SIZE,
+									 encoder=encoder, 
+									 decoder=decoder,
+									 clip=clip,
+									 encoder_optimizer=encoder_optimizer, 
+									 decoder_optimizer=decoder_optimizer, 
+									 run_forward_func=run_forward_text,
+									 USE_CUDA=USE_CUDA)
+
+				loss = loss_values[0] #first loss is word loss and only loss in text training
+				losses.append(loss)
+				# Keep track of loss
+				print_loss_total += loss
+				plot_loss_total += loss
+				eca += ec
+				dca += dc
+				training_batch += 1
+
+				if training_batch % print_every_batch == 0:
+					print_loss_avg = print_loss_total / print_every_batch
+					print_loss_total = 0
+					print_summary = '%s (Batch:%d/%d %d%%) (Epoch: %d/%d) Loss:%.4f' % (time_since(start, training_batch / no_of_batch_in_epoch), training_batch, no_of_batch_in_epoch, training_batch / no_of_batch_in_epoch * 100, epoch, n_epochs, print_loss_avg)
+					print(print_summary)
+					if options.log_file:
+						log_loss(options.log_file, [print_loss_avg])
+
+				if training_batch % save_every_batch == 0:
+					plot_loss_avg = float(plot_loss_total / save_every_batch)
+					plot_losses.append(plot_loss_avg)
+					plot_loss_total = 0
+
+					#if plot_loss_avg <= min(plot_losses):
+					print("Average loss of last %i batch: %f"%(save_every_batch, plot_loss_avg))
+					save_model(encoder.state_dict(), decoder.state_dict(), options.model_name, options.model_dir, checkpoint=True)
+		
+			# Validate model on validation set
+			print("VALIDATION ", end='')
+			validation_loss_total = 0
+			validation_batch = 0
+			for input_word_batch, input_lengths, target_word_batch, target_lengths in batch_generator(VALIDATION_DATA_PATH, 1, input_lang, output_lang, tokenize = not TEXT_DATA_TOKENIZED, USE_CUDA=USE_CUDA):
+				loss_values = validate( input_word_batch=input_word_batch,
 								 input_prosody_batch=None, 
 								 input_lengths=input_lengths, 
-								 target_word_batch=target_word_batch,
+								 target_word_batch=target_word_batch, 
 								 target_prosody_batch=None,
-								 target_flag_batch=None, 
+								 target_flag_batch=None,
 								 target_lengths=target_lengths,
 								 input_lang=input_lang, 
 								 output_lang=output_lang,
-								 batch_size=TRAINING_BATCH_SIZE,
+								 batch_size=1,
 								 encoder=encoder, 
 								 decoder=decoder,
-								 clip=clip,
-								 encoder_optimizer=encoder_optimizer, 
-								 decoder_optimizer=decoder_optimizer, 
 								 run_forward_func=run_forward_text,
 								 USE_CUDA=USE_CUDA)
+				
+				loss = loss_values[0] #first loss is word loss and only loss in text training
 
-			loss = loss_values[0] #first loss is word loss and only loss in text training
-			losses.append(loss)
-			# Keep track of loss
-			print_loss_total += loss
-			plot_loss_total += loss
-			eca += ec
-			dca += dc
-			training_batch += 1
+				validation_loss_total += loss
+				validation_batch += 1
 
-			if training_batch % print_every_batch == 0:
-				print_loss_avg = print_loss_total / print_every_batch
-				print_loss_total = 0
-				print_summary = '%s (Batch:%d/%d %d%%) (Epoch: %d/%d) Loss:%.4f' % (time_since(start, training_batch / no_of_batch_in_epoch), training_batch, no_of_batch_in_epoch, training_batch / no_of_batch_in_epoch * 100, epoch, n_epochs, print_loss_avg)
-				print(print_summary)
-				if options.log_file:
-					log_loss(options.log_file, [print_loss_avg])
+			validation_loss_avg = float(validation_loss_total / validation_batch)
+			validation_summary = 'at Epoch: %d/%d Average Loss:%.4f' % (epoch, n_epochs, validation_loss_avg)
+			print(validation_summary)
 
-			if training_batch % save_every_batch == 0:
-				plot_loss_avg = float(plot_loss_total / save_every_batch)
-				plot_losses.append(plot_loss_avg)
-				plot_loss_total = 0
+			# Stopping criteria: stop if validation loss didn't get better in last PATIENCE_EPOCHS 
+			if len(validation_losses) == 0 or any([validation_loss_avg < loss for loss in validation_losses[-patience_epochs:]]):
+				#Keep on training
+				if len(validation_losses) == 0 or validation_loss_avg < min(validation_losses):
+					save_model(encoder.state_dict(), decoder.state_dict(), options.model_name, options.model_dir)
+				validation_losses.append(validation_loss_avg)
+			else:
+				print("Finished!")
+				print("Best validation loss: %f"%min(validation_losses))
+				break
 
-				#if plot_loss_avg <= min(plot_losses):
-				print("Average loss of last %i batch: %f"%(save_every_batch, plot_loss_avg))
-				save_model(encoder.state_dict(), decoder.state_dict(), options.model_name, options.model_dir, checkpoint=True)
-	
-		# Validate model on validation set
-		print("VALIDATION ", end='')
-		validation_loss_total = 0
-		validation_batch = 0
-		for input_word_batch, input_lengths, target_word_batch, target_lengths in batch_generator(VALIDATION_DATA_PATH, 1, input_lang, output_lang, tokenize = not TEXT_DATA_TOKENIZED, USE_CUDA=USE_CUDA):
-			loss_values = validate( input_word_batch=input_word_batch,
-							 input_prosody_batch=None, 
-							 input_lengths=input_lengths, 
-							 target_word_batch=target_word_batch, 
-							 target_prosody_batch=None,
-							 target_flag_batch=None,
-							 target_lengths=target_lengths,
-							 input_lang=input_lang, 
-							 output_lang=output_lang,
-							 batch_size=1,
-							 encoder=encoder, 
-							 decoder=decoder,
-							 run_forward_func=run_forward_text,
-							 USE_CUDA=USE_CUDA)
-			
-			loss = loss_values[0] #first loss is word loss and only loss in text training
-
-			validation_loss_total += loss
-			validation_batch += 1
-
-		validation_loss_avg = float(validation_loss_total / validation_batch)
-		validation_summary = 'at Epoch: %d/%d Average Loss:%.4f' % (epoch, n_epochs, validation_loss_avg)
-		print(validation_summary)
-
-		# Stopping criteria: stop if validation loss didn't get better in last PATIENCE_EPOCHS 
-		if len(validation_losses) == 0 or any([validation_loss_avg < loss for loss in validation_losses[-patience_epochs:]]):
-			#Keep on training
-			if len(validation_losses) == 0 or validation_loss_avg < min(validation_losses):
-				save_model(encoder.state_dict(), decoder.state_dict(), options.model_name, options.model_dir)
-			validation_losses.append(validation_loss_avg)
-		else:
-			print("Finished!")
-			print("Best validation loss: %f"%min(validation_losses))
-			break
-
-		epoch += 1
+			epoch += 1
 
 if __name__ == "__main__":
 	usage = "usage: %prog [-s infile] [option]"
